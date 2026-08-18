@@ -29,14 +29,11 @@
           pkgs.unzip
         ];
 
-        # Nerves cross-compiles for this target rather than the host.
-        MIX_TARGET = "rpi3";
-
         # Nerves downloads prebuilt toolchains and host tools that are linked
         # against a normal FHS layout; programs.nix-ld in the system config
         # supplies the loader they expect.
         shellHook = ''
-          echo "erlang $(erl -noshell -eval 'io:format("~s", [erlang:system_info(otp_release)]), halt().')  elixir $(elixir --version | sed -n 's/^Elixir \([0-9.]*\).*/\1/p')  MIX_TARGET=$MIX_TARGET"
+          echo "erlang $(erl -noshell -eval 'io:format("~s", [erlang:system_info(otp_release)]), halt().')  elixir $(elixir --version | sed -n 's/^Elixir \([0-9.]*\).*/\1/p')"
         '';
       };
     };
