@@ -1,3 +1,3 @@
 [
-  subdirectories: ["admx3652", "panelmeter"]
+  subdirectories: ["admx3652", "docs", "panelmeter"]
 ]
