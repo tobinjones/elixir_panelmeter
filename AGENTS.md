@@ -2,6 +2,12 @@
 
 Build an Elixir driver for the ADMX3652 and Nerves firmware for the target hardware.
 
+# Projects
+
+* `admx3652` — pure Elixir driver
+* `panelmeter` — Nerves firmware
+* `docs` — whole-project ExDoc documentation; `docs/pages/admx3652/` contains the module reference manual
+
 # Philosophy
 
 * Think in OTP: Processes, supervision structure, message graph
