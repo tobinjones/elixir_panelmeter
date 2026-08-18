@@ -16,6 +16,12 @@ defmodule ADMX3652.TestTransportTest do
   test "reports enabled state changes to the test process", %{transport: transport} do
     assert :ok = TestTransport.set_enabled(transport, true)
     assert_receive {:transport_enabled, true}
+    assert {:ok, true} = TestTransport.enabled?(transport)
+  end
+
+  test "reports its initial enabled state" do
+    assert {:ok, transport} = TestTransport.start_link(self(), test: self(), enabled: true)
+    assert {:ok, true} = TestTransport.enabled?(transport)
   end
 
   test "sends incoming lines to the owner", %{transport: transport} do

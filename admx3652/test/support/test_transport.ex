@@ -5,7 +5,7 @@ defmodule ADMX3652.TestTransport do
 
   @behaviour ADMX3652.Transport
 
-  defstruct [:owner, :test]
+  defstruct [:owner, :test, enabled: false]
 
   @impl ADMX3652.Transport
   def start_link(owner, opts) do
@@ -20,6 +20,11 @@ defmodule ADMX3652.TestTransport do
   @impl ADMX3652.Transport
   def set_enabled(transport, enabled) do
     GenServer.call(transport, {:set_enabled, enabled})
+  end
+
+  @impl ADMX3652.Transport
+  def enabled?(transport) do
+    GenServer.call(transport, :enabled?)
   end
 
   # Test-only API
@@ -37,7 +42,8 @@ defmodule ADMX3652.TestTransport do
     {:ok,
      %__MODULE__{
        owner: owner,
-       test: Keyword.fetch!(opts, :test)
+       test: Keyword.fetch!(opts, :test),
+       enabled: Keyword.get(opts, :enabled, false)
      }}
   end
 
@@ -49,7 +55,11 @@ defmodule ADMX3652.TestTransport do
 
   def handle_call({:set_enabled, enabled}, _from, state) do
     send(state.test, {:transport_enabled, enabled})
-    {:reply, :ok, state}
+    {:reply, :ok, %{state | enabled: enabled}}
+  end
+
+  def handle_call(:enabled?, _from, state) do
+    {:reply, {:ok, state.enabled}, state}
   end
 
   @impl GenServer

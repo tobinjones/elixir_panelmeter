@@ -22,4 +22,7 @@ defmodule ADMX3652.Transport do
 
   @callback set_enabled(t(), boolean()) ::
               :ok | {:error, reason()}
+
+  @callback enabled?(t()) ::
+              {:ok, boolean()} | {:error, reason()}
 end
