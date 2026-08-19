@@ -31,6 +31,25 @@ defmodule ADMX3652 do
   end
 
   @doc """
+  Enables the instrument.
+
+  From `:off`, a successful request enters `:starting`. Startup progression
+  beyond that state is not implemented yet.
+  """
+  @spec enable(:gen_statem.server_ref()) :: :ok | {:error, term()}
+  def enable(meter) do
+    :gen_statem.call(meter, :enable, :infinity)
+  end
+
+  @doc """
+  Disables the instrument and enters `:off`.
+  """
+  @spec disable(:gen_statem.server_ref()) :: :ok | {:error, term()}
+  def disable(meter) do
+    :gen_statem.call(meter, :disable, :infinity)
+  end
+
+  @doc """
   Reads the currently resolved range for a channel.
   """
   @spec get_range(:gen_statem.server_ref(), ADMX3652.Protocol.channel()) ::
@@ -53,7 +72,7 @@ defmodule ADMX3652 do
   Sends an arbitrary line to the instrument without verification.
 
   A raw command bypasses exchange tracking and invalidates the shadow state.
-  It is accepted while the instrument is idle in `:ready`, or while it is
+  It is accepted in `:starting`, `:configuring`, idle `:ready`, and
   `:desynchronised`.
   """
   @spec raw_command(:gen_statem.server_ref(), binary()) :: :ok | {:error, term()}
@@ -119,15 +138,31 @@ defmodule ADMX3652 do
      }}
   end
 
+  def off({:call, from}, :enable, data), do: enable_instrument(data, from)
+  def off({:call, from}, :disable, data), do: reply(data, from, :ok)
   def off({:call, from}, _request, data), do: reply(data, from, {:error, :off})
   def off(:info, message, data), do: handle_info(message, data)
   def off(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def off(_event_type, _event_content, data), do: {:keep_state, data}
 
+  def starting({:call, from}, :enable, data), do: reply(data, from, :ok)
+  def starting({:call, from}, :disable, data), do: disable_instrument(data, from)
+
+  def starting({:call, from}, {:raw_command, raw_line}, data) do
+    send_raw_command(data, from, raw_line)
+  end
+
   def starting({:call, from}, _request, data), do: reply(data, from, {:error, :starting})
   def starting(:info, message, data), do: handle_info(message, data)
   def starting(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def starting(_event_type, _event_content, data), do: {:keep_state, data}
+
+  def configuring({:call, from}, :enable, data), do: reply(data, from, :ok)
+  def configuring({:call, from}, :disable, data), do: disable_instrument(data, from)
+
+  def configuring({:call, from}, {:raw_command, raw_line}, data) do
+    send_raw_command(data, from, raw_line)
+  end
 
   def configuring({:call, from}, _request, data),
     do: reply(data, from, {:error, :configuring})
@@ -135,6 +170,12 @@ defmodule ADMX3652 do
   def configuring(:info, message, data), do: handle_info(message, data)
   def configuring(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def configuring(_event_type, _event_content, data), do: {:keep_state, data}
+
+  def ready({:call, from}, :enable, data), do: reply(data, from, :ok)
+
+  def ready({:call, from}, :disable, %StateData{current: nil} = data) do
+    disable_instrument(data, from)
+  end
 
   def ready(
         {:call, from},
@@ -190,6 +231,12 @@ defmodule ADMX3652 do
   end
 
   def ready(_event_type, _event_content, data), do: {:keep_state, data}
+
+  def desynchronised({:call, from}, :enable, data), do: reply(data, from, :ok)
+
+  def desynchronised({:call, from}, :disable, data) do
+    disable_instrument(data, from)
+  end
 
   def desynchronised({:call, from}, {:raw_command, raw_line}, data) do
     send_raw_command(data, from, raw_line)
@@ -265,6 +312,32 @@ defmodule ADMX3652 do
 
     {:next_state, :desynchronised, data,
      [{{:timeout, :exchange}, :cancel}, {:reply, from, {:error, reason}}]}
+  end
+
+  defp enable_instrument(data, from) do
+    case data.transport_mod.set_enabled(data.transport, true) do
+      :ok ->
+        data = %{data | shadow: :unknown}
+        {:next_state, :starting, data, [{:reply, from, :ok}]}
+
+      {:error, reason} ->
+        data = %{data | shadow: :unknown}
+
+        {:next_state, :desynchronised, data, [{:reply, from, {:error, {:transport, reason}}}]}
+    end
+  end
+
+  defp disable_instrument(data, from) do
+    case data.transport_mod.set_enabled(data.transport, false) do
+      :ok ->
+        data = %{data | current: nil, shadow: %Shadow{}}
+        {:next_state, :off, data, [{:reply, from, :ok}]}
+
+      {:error, reason} ->
+        data = %{data | shadow: :unknown}
+
+        {:next_state, :desynchronised, data, [{:reply, from, {:error, {:transport, reason}}}]}
+    end
   end
 
   defp send_raw_command(data, from, raw_line) do

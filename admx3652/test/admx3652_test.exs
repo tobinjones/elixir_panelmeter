@@ -60,6 +60,39 @@ defmodule ADMX3652Test do
     assert ADMX3652.raw_command(meter, "*IDN?") == {:error, :off}
   end
 
+  test "enable, raw commands, and disable follow the temporary lifecycle" do
+    pubsub = start_line_pubsub()
+    {:ok, meter} = start_meter(pubsub: pubsub)
+
+    assert ADMX3652.enable(meter) == :ok
+    assert_receive {:transport_enabled, true}
+
+    assert {:starting, %StateData{transport: transport, shadow: :unknown}} =
+             :sys.get_state(meter)
+
+    TestTransport.send_line(transport, "DAQ is ready to use")
+
+    assert_receive %Line{
+      direction: :received,
+      decoded: {:device_message, :ready},
+      exchange_id: nil
+    }
+
+    assert {:starting, %StateData{}} = :sys.get_state(meter)
+
+    assert ADMX3652.raw_command(meter, "SYSTem:VERSion?") == :ok
+    assert_receive {:transport_write, "SYSTem:VERSion?"}
+    assert {:desynchronised, %StateData{shadow: :unknown}} = :sys.get_state(meter)
+
+    assert ADMX3652.raw_command(meter, "*IDN?") == :ok
+    assert_receive {:transport_write, "*IDN?"}
+    assert {:desynchronised, %StateData{shadow: :unknown}} = :sys.get_state(meter)
+
+    assert ADMX3652.disable(meter) == :ok
+    assert_receive {:transport_enabled, false}
+    assert {:off, %StateData{current: nil, shadow: %Shadow{}}} = :sys.get_state(meter)
+  end
+
   test "publishes received lines even when no exchange is active" do
     pubsub = start_line_pubsub()
     {:ok, meter} = start_meter(pubsub: pubsub)
@@ -286,6 +319,22 @@ defmodule ADMX3652Test do
     assert_receive {:transport_write, "SYSTem:ERRor?"}
 
     assert ADMX3652.raw_command(meter, "*IDN?") == {:error, :busy}
+
+    {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
+    TestTransport.send_line(transport, ~s(0,"No error"))
+
+    assert Task.await(task) == {:ok, 2.0}
+  end
+
+  test "rejects disable while an exchange is active" do
+    {:ok, meter} = start_ready_meter()
+
+    task = Task.async(fn -> ADMX3652.get_range(meter, 1) end)
+    assert_receive {:transport_write, "CONFigure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    assert ADMX3652.disable(meter) == {:error, :busy}
 
     {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
