@@ -3,7 +3,19 @@ defmodule Panelmeter.MixProject do
 
   @app :panelmeter
   @version "0.1.0"
-  @all_targets [:bbb, :mangopi_mq_pro, :qemu_aarch64, :rpi, :rpi0, :rpi0_2, :rpi2, :rpi3, :rpi4, :rpi5, :x86_64]
+  @all_targets [
+    :bbb,
+    :mangopi_mq_pro,
+    :qemu_aarch64,
+    :rpi,
+    :rpi0,
+    :rpi0_2,
+    :rpi2,
+    :rpi3,
+    :rpi4,
+    :rpi5,
+    :x86_64
+  ]
 
   def project do
     [
@@ -35,7 +47,6 @@ defmodule Panelmeter.MixProject do
     [
       # Dependencies for all targets
       {:nerves, "~> 1.13", runtime: false},
-
       {:shoehorn, "~> 0.9.1"},
       {:ring_logger, "~> 0.11.0"},
       {:toolshed, "~> 0.5.0"},
@@ -43,6 +54,7 @@ defmodule Panelmeter.MixProject do
       # Allow Nerves.Runtime on host to support development, testing and CI.
       # See config/host.exs for usage.
       {:nerves_runtime, "~> 0.13.12"},
+      {:phoenix_pubsub, "~> 2.2"},
 
       # Dependencies for all targets except :host
       {:nerves_pack, "~> 0.7.1", targets: @all_targets},

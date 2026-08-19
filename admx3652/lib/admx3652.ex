@@ -11,19 +11,20 @@ defmodule ADMX3652 do
   alias ADMX3652.{Command, Exchange, Line, Shadow}
 
   @exchange_timeout 1_000
+  @line_topic "admx3652:lines"
 
   @type state :: :off | :starting | :configuring | :ready | :desynchronised
 
   defmodule StateData do
     @moduledoc false
 
-    @enforce_keys [:transport_mod, :transport]
-    defstruct [:transport_mod, :transport, :line_publisher, current: nil, shadow: %Shadow{}]
+    @enforce_keys [:transport_mod, :transport, :pubsub]
+    defstruct [:transport_mod, :transport, :pubsub, current: nil, shadow: %Shadow{}]
 
     @type t :: %__MODULE__{
             transport_mod: module(),
             transport: ADMX3652.Transport.t(),
-            line_publisher: nil | {module(), term()},
+            pubsub: Phoenix.PubSub.t(),
             current: nil | {:gen_statem.from(), Exchange.t()},
             shadow: Shadow.t() | :unknown
           }
@@ -55,8 +56,8 @@ defmodule ADMX3652 do
 
     * `:transport` - transport module (required)
     * `:transport_opts` - options passed to the transport (defaults to `[]`)
-    * `:line_publisher` - optional `{module, publisher_opts}` implementing
-      `ADMX3652.LinePublisher`
+    * `:pubsub` - registered name of a supervised `Phoenix.PubSub` server
+      (required); lines are broadcast on `"admx3652:lines"`
     * `:name` - optional `:gen_statem` registration name
   """
   @spec start_link(keyword()) :: :gen_statem.start_ret()
@@ -86,7 +87,7 @@ defmodule ADMX3652 do
   def init(opts) do
     transport_mod = Keyword.fetch!(opts, :transport)
     transport_opts = Keyword.get(opts, :transport_opts, [])
-    line_publisher = Keyword.get(opts, :line_publisher)
+    pubsub = Keyword.fetch!(opts, :pubsub)
 
     {:ok, transport} = transport_mod.start_link(self(), transport_opts)
 
@@ -101,7 +102,7 @@ defmodule ADMX3652 do
      %StateData{
        transport_mod: transport_mod,
        transport: transport,
-       line_publisher: line_publisher
+       pubsub: pubsub
      }}
   end
 
@@ -269,10 +270,8 @@ defmodule ADMX3652 do
     {:keep_state, data}
   end
 
-  defp publish(%StateData{line_publisher: nil}, _line), do: :ok
-
-  defp publish(%StateData{line_publisher: {publisher, publisher_opts}}, line) do
-    :ok = publisher.publish(line, publisher_opts)
+  defp publish(%StateData{pubsub: pubsub}, line) do
+    :ok = Phoenix.PubSub.broadcast(pubsub, @line_topic, line)
   end
 
   defp reply(data, from, response) do

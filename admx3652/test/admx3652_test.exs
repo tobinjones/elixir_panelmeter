@@ -1,13 +1,18 @@
 defmodule ADMX3652Test do
   use ExUnit.Case, async: true
 
-  alias ADMX3652.{Line, Shadow, StateData, TestLinePublisher, TestTransport}
+  alias ADMX3652.{Line, Shadow, StateData, TestTransport}
+
+  @line_topic "admx3652:lines"
 
   test "starts in :off and starts its transport" do
+    pubsub = start_pubsub()
+
     assert {:ok, meter} =
              ADMX3652.start_link(
                transport: TestTransport,
-               transport_opts: [test: self()]
+               transport_opts: [test: self()],
+               pubsub: pubsub
              )
 
     assert {:off,
@@ -21,22 +26,27 @@ defmodule ADMX3652Test do
 
   test "can be registered by name" do
     name = :admx3652_test_meter
+    pubsub = start_pubsub()
 
     assert {:ok, meter} =
              ADMX3652.start_link(
                name: name,
                transport: TestTransport,
-               transport_opts: [test: self()]
+               transport_opts: [test: self()],
+               pubsub: pubsub
              )
 
     assert Process.whereis(name) == meter
   end
 
   test "starts in :desynchronised when the transport is already enabled" do
+    pubsub = start_pubsub()
+
     assert {:ok, meter} =
              ADMX3652.start_link(
                transport: TestTransport,
-               transport_opts: [test: self(), enabled: true]
+               transport_opts: [test: self(), enabled: true],
+               pubsub: pubsub
              )
 
     assert {:desynchronised, %ADMX3652.StateData{}} = :sys.get_state(meter)
@@ -49,19 +59,19 @@ defmodule ADMX3652Test do
   end
 
   test "publishes received lines even when no exchange is active" do
-    {:ok, meter} = start_meter(line_publisher: {TestLinePublisher, self()})
+    pubsub = start_line_pubsub()
+    {:ok, meter} = start_meter(pubsub: pubsub)
 
     {:off, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "Channel1: -0.0000006 ")
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :received,
-                      raw: "Channel1: -0.0000006 ",
-                      timestamp: timestamp,
-                      decoded: {:measurement, 1, value},
-                      exchange_id: nil
-                    }}
+    assert_receive %Line{
+      direction: :received,
+      raw: "Channel1: -0.0000006 ",
+      timestamp: timestamp,
+      decoded: {:measurement, 1, value},
+      exchange_id: nil
+    }
 
     assert is_integer(timestamp)
     assert value == -0.0000006
@@ -84,76 +94,71 @@ defmodule ADMX3652Test do
   end
 
   test "publishes sent and claimed lines with one exchange id" do
-    {:ok, meter} =
-      start_ready_meter(line_publisher: {TestLinePublisher, self()})
+    pubsub = start_line_pubsub()
+    {:ok, meter} = start_ready_meter(pubsub: pubsub)
 
     task = Task.async(fn -> ADMX3652.get_range(meter, 1) end)
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :sent,
-                      raw: "CONFigure:VOLTage:DC? 1",
-                      decoded: nil,
-                      exchange_id: exchange_id
-                    }}
+    assert_receive %Line{
+      direction: :sent,
+      raw: "CONFigure:VOLTage:DC? 1",
+      decoded: nil,
+      exchange_id: exchange_id
+    }
 
     assert is_reference(exchange_id)
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :sent,
-                      raw: "SYSTem:ERRor?",
-                      decoded: nil,
-                      exchange_id: ^exchange_id
-                    }}
+    assert_receive %Line{
+      direction: :sent,
+      raw: "SYSTem:ERRor?",
+      decoded: nil,
+      exchange_id: ^exchange_id
+    }
 
     {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
     TestTransport.send_line(transport, ~s(0,"No error"))
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :received,
-                      raw: "CHAN[1]-RANGE: 2.000000",
-                      decoded: {:range, 1, 2.0},
-                      exchange_id: ^exchange_id
-                    }}
+    assert_receive %Line{
+      direction: :received,
+      raw: "CHAN[1]-RANGE: 2.000000",
+      decoded: {:range, 1, 2.0},
+      exchange_id: ^exchange_id
+    }
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :received,
-                      raw: ~s(0,"No error"),
-                      decoded: {:error_queue, 0, "No error"},
-                      exchange_id: ^exchange_id
-                    }}
+    assert_receive %Line{
+      direction: :received,
+      raw: ~s(0,"No error"),
+      decoded: {:error_queue, 0, "No error"},
+      exchange_id: ^exchange_id
+    }
 
     assert Task.await(task) == {:ok, 2.0}
   end
 
   test "does not label a received line rejected as invalid by the exchange" do
-    {:ok, meter} =
-      start_ready_meter(line_publisher: {TestLinePublisher, self()})
+    pubsub = start_line_pubsub()
+    {:ok, meter} = start_ready_meter(pubsub: pubsub)
 
     task = Task.async(fn -> ADMX3652.get_range(meter, 1) end)
 
-    assert_receive {:published_line, %Line{direction: :sent}}
-    assert_receive {:published_line, %Line{direction: :sent}}
+    assert_receive %Line{direction: :sent}
+    assert_receive %Line{direction: :sent}
 
     {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
 
-    assert_receive {:published_line, %Line{direction: :received, exchange_id: exchange_id}}
+    assert_receive %Line{direction: :received, exchange_id: exchange_id}
 
     assert is_reference(exchange_id)
 
     TestTransport.send_line(transport, "CHAN[1]-RANGE: 3.000000")
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :received,
-                      raw: "CHAN[1]-RANGE: 3.000000",
-                      exchange_id: nil
-                    }}
+    assert_receive %Line{
+      direction: :received,
+      raw: "CHAN[1]-RANGE: 3.000000",
+      exchange_id: nil
+    }
 
     assert Task.await(task) ==
              {:error, {:protocol, {:command_response, :duplicate_range_response}}}
@@ -162,50 +167,45 @@ defmodule ADMX3652Test do
   end
 
   test "interleaves follow-up writes into the published line stream" do
-    {:ok, meter} =
-      start_ready_meter(line_publisher: {TestLinePublisher, self()})
+    pubsub = start_line_pubsub()
+    {:ok, meter} = start_ready_meter(pubsub: pubsub)
 
     task = Task.async(fn -> ADMX3652.set_range(meter, 1, 2.0) end)
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :sent,
-                      raw: "CONFigure:VOLTage:DC 1,2.0",
-                      exchange_id: exchange_id
-                    }}
+    assert_receive %Line{
+      direction: :sent,
+      raw: "CONFigure:VOLTage:DC 1,2.0",
+      exchange_id: exchange_id
+    }
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :sent,
-                      raw: "SYSTem:ERRor?",
-                      exchange_id: ^exchange_id
-                    }}
+    assert_receive %Line{
+      direction: :sent,
+      raw: "SYSTem:ERRor?",
+      exchange_id: ^exchange_id
+    }
 
     {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, ~s(-224,"Illegal parameter value"))
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :received,
-                      decoded: {:error_queue, -224, "Illegal parameter value"},
-                      exchange_id: ^exchange_id
-                    }}
+    assert_receive %Line{
+      direction: :received,
+      decoded: {:error_queue, -224, "Illegal parameter value"},
+      exchange_id: ^exchange_id
+    }
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :sent,
-                      raw: "SYSTem:ERRor?",
-                      exchange_id: ^exchange_id
-                    }}
+    assert_receive %Line{
+      direction: :sent,
+      raw: "SYSTem:ERRor?",
+      exchange_id: ^exchange_id
+    }
 
     TestTransport.send_line(transport, ~s(0,"No error"))
 
-    assert_receive {:published_line,
-                    %Line{
-                      direction: :received,
-                      decoded: {:error_queue, 0, "No error"},
-                      exchange_id: ^exchange_id
-                    }}
+    assert_receive %Line{
+      direction: :received,
+      decoded: {:error_queue, 0, "No error"},
+      exchange_id: ^exchange_id
+    }
 
     assert Task.await(task) ==
              {:error, {:device, [{-224, "Illegal parameter value"}]}}
@@ -268,9 +268,12 @@ defmodule ADMX3652Test do
   end
 
   defp start_meter(opts \\ []) do
+    pubsub = Keyword.get_lazy(opts, :pubsub, &start_pubsub/0)
+
     defaults = [
       transport: TestTransport,
-      transport_opts: [test: self()]
+      transport_opts: [test: self()],
+      pubsub: pubsub
     ]
 
     ADMX3652.start_link(Keyword.merge(defaults, opts))
@@ -281,5 +284,17 @@ defmodule ADMX3652Test do
       :sys.replace_state(meter, fn {_state, data} -> {:ready, data} end)
       {:ok, meter}
     end
+  end
+
+  defp start_line_pubsub do
+    pubsub = start_pubsub()
+    :ok = Phoenix.PubSub.subscribe(pubsub, @line_topic)
+    pubsub
+  end
+
+  defp start_pubsub do
+    name = Module.concat(__MODULE__, "PubSub#{System.unique_integer([:positive])}")
+    start_supervised!({Phoenix.PubSub, name: name})
+    name
   end
 end
