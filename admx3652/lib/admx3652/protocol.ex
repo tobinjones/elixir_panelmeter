@@ -18,10 +18,10 @@ defmodule ADMX3652.Protocol do
           | :unknown
 
   @spec decode(binary()) :: decoded()
-  def decode(line) when is_binary(line) do
-    line = String.trim(line)
+  def decode(raw_line) when is_binary(raw_line) do
+    trimmed_line = String.trim(raw_line)
 
-    case line do
+    case trimmed_line do
       # Measurements
 
       "Channel1: " <> value ->
@@ -122,7 +122,7 @@ defmodule ADMX3652.Protocol do
       # Everything less conveniently expressed by prefix matching
 
       _ ->
-        decode_other(line)
+        decode_other(trimmed_line)
     end
   end
 
