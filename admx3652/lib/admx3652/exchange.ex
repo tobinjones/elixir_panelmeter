@@ -15,7 +15,10 @@ defmodule ADMX3652.Exchange do
 
   @error_query "SYSTem:ERRor?"
 
+  @type id :: reference()
+
   @type t :: %__MODULE__{
+          id: id(),
           command: Command.t(),
           response: Command.response(),
           errors: [{integer(), binary()}]
@@ -27,21 +30,24 @@ defmodule ADMX3652.Exchange do
           | :not_claimed
           | {:invalid, term()}
 
-  @enforce_keys [:command]
-  defstruct [:command, :response, errors: []]
+  @enforce_keys [:id, :command]
+  defstruct [:id, :command, :response, errors: []]
 
   @doc """
   Starts an exchange and returns all commands that should be written now.
+
+  The owning process supplies the inert ID used to correlate published lines;
+  it has no effect on protocol matching.
 
   The error query is sent immediately after the primary command. This means a
   failed query that produces no primary response can still finish with the
   queued device error instead of waiting for a timeout.
   """
-  @spec start(Command.t()) :: {t(), [iodata()]}
-  def start(command) do
+  @spec start(id(), Command.t()) :: {t(), [iodata()]}
+  def start(exchange_id, command) when is_reference(exchange_id) do
     {response, write} = Command.prepare(command)
 
-    {%__MODULE__{command: command, response: response}, [write, @error_query]}
+    {%__MODULE__{id: exchange_id, command: command, response: response}, [write, @error_query]}
   end
 
   @doc """

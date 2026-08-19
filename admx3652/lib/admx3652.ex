@@ -8,7 +8,7 @@ defmodule ADMX3652 do
 
   @behaviour :gen_statem
 
-  alias ADMX3652.{Command, Exchange, Shadow}
+  alias ADMX3652.{Command, Exchange, Line, Shadow}
 
   @exchange_timeout 1_000
 
@@ -18,11 +18,12 @@ defmodule ADMX3652 do
     @moduledoc false
 
     @enforce_keys [:transport_mod, :transport]
-    defstruct [:transport_mod, :transport, current: nil, shadow: %Shadow{}]
+    defstruct [:transport_mod, :transport, :line_publisher, current: nil, shadow: %Shadow{}]
 
     @type t :: %__MODULE__{
             transport_mod: module(),
             transport: ADMX3652.Transport.t(),
+            line_publisher: nil | {module(), term()},
             current: nil | {:gen_statem.from(), Exchange.t()},
             shadow: Shadow.t() | :unknown
           }
@@ -54,6 +55,8 @@ defmodule ADMX3652 do
 
     * `:transport` - transport module (required)
     * `:transport_opts` - options passed to the transport (defaults to `[]`)
+    * `:line_publisher` - optional `{module, publisher_opts}` implementing
+      `ADMX3652.LinePublisher`
     * `:name` - optional `:gen_statem` registration name
   """
   @spec start_link(keyword()) :: :gen_statem.start_ret()
@@ -83,6 +86,7 @@ defmodule ADMX3652 do
   def init(opts) do
     transport_mod = Keyword.fetch!(opts, :transport)
     transport_opts = Keyword.get(opts, :transport_opts, [])
+    line_publisher = Keyword.get(opts, :line_publisher)
 
     {:ok, transport} = transport_mod.start_link(self(), transport_opts)
 
@@ -93,21 +97,29 @@ defmodule ADMX3652 do
         {:error, _reason} -> :desynchronised
       end
 
-    {:ok, state, %Data{transport_mod: transport_mod, transport: transport}}
+    {:ok, state,
+     %Data{
+       transport_mod: transport_mod,
+       transport: transport,
+       line_publisher: line_publisher
+     }}
   end
 
   def off({:call, from}, _request, data), do: reply(data, from, {:error, :off})
   def off(:info, message, data), do: handle_info(message, data)
+  def off(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def off(_event_type, _event_content, data), do: {:keep_state, data}
 
   def starting({:call, from}, _request, data), do: reply(data, from, {:error, :starting})
   def starting(:info, message, data), do: handle_info(message, data)
+  def starting(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def starting(_event_type, _event_content, data), do: {:keep_state, data}
 
   def configuring({:call, from}, _request, data),
     do: reply(data, from, {:error, :configuring})
 
   def configuring(:info, message, data), do: handle_info(message, data)
+  def configuring(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def configuring(_event_type, _event_content, data), do: {:keep_state, data}
 
   def ready({:call, from}, request, %Data{current: nil} = data) do
@@ -120,26 +132,29 @@ defmodule ADMX3652 do
   def ready({:call, from}, _request, data), do: reply(data, from, {:error, :busy})
   def ready(:info, message, data), do: handle_info(message, data)
 
-  def ready(:internal, %ADMX3652.Line{} = line, %Data{current: nil} = data) do
+  def ready(:internal, %Line{} = line, %Data{current: nil} = data) do
     route_unsolicited(line, data)
   end
 
   def ready(
         :internal,
-        %ADMX3652.Line{} = line,
+        %Line{} = line,
         %Data{current: {from, exchange}} = data
       ) do
     case Exchange.offer(exchange, line.decoded) do
       {:continue, exchange, writes} ->
+        publish(data, %{line | exchange_id: exchange.id})
         continue_exchange(data, from, exchange, writes)
 
       {:complete, result, shadow_delta} ->
+        publish(data, %{line | exchange_id: exchange.id})
         finish_exchange(data, from, result, shadow_delta)
 
       :not_claimed ->
         route_unsolicited(line, data)
 
       {:invalid, reason} ->
+        publish(data, line)
         fail_exchange(data, from, {:protocol, reason})
     end
   end
@@ -158,13 +173,15 @@ defmodule ADMX3652 do
     do: reply(data, from, {:error, :desynchronised})
 
   def desynchronised(:info, message, data), do: handle_info(message, data)
+  def desynchronised(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def desynchronised(_event_type, _event_content, data), do: {:keep_state, data}
 
   defp handle_info(
          {:admx3652_transport, transport, {:line, raw_line}},
          %Data{transport: transport} = data
        ) do
-    line = %ADMX3652.Line{
+    line = %Line{
+      direction: :received,
       raw: raw_line,
       timestamp: System.monotonic_time(),
       decoded: ADMX3652.Protocol.decode(raw_line)
@@ -186,9 +203,10 @@ defmodule ADMX3652 do
   defp command(_request), do: :error
 
   defp start_exchange(data, from, command) do
-    {exchange, writes} = Exchange.start(command)
+    exchange_id = make_ref()
+    {exchange, writes} = Exchange.start(exchange_id, command)
 
-    case write_all(data, writes) do
+    case write_all(data, exchange.id, writes) do
       :ok ->
         data = %{data | current: {from, exchange}}
 
@@ -200,7 +218,7 @@ defmodule ADMX3652 do
   end
 
   defp continue_exchange(data, from, exchange, writes) do
-    case write_all(data, writes) do
+    case write_all(data, exchange.id, writes) do
       :ok ->
         {:keep_state, %{data | current: {from, exchange}}}
 
@@ -223,17 +241,39 @@ defmodule ADMX3652 do
      [{{:timeout, :exchange}, :cancel}, {:reply, from, {:error, reason}}]}
   end
 
-  defp write_all(data, writes) do
+  defp write_all(data, exchange_id, writes) do
     Enum.reduce_while(writes, :ok, fn write, :ok ->
       case data.transport_mod.write(data.transport, write) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
+        :ok ->
+          raw_line = IO.iodata_to_binary(write)
+
+          publish(data, %Line{
+            direction: :sent,
+            raw: raw_line,
+            timestamp: System.monotonic_time(),
+            decoded: nil,
+            exchange_id: exchange_id
+          })
+
+          {:cont, :ok}
+
+        {:error, _reason} = error ->
+          {:halt, error}
       end
     end)
   end
 
-  # Not implemented yet: listener delivery and unexpected-message policy.
-  defp route_unsolicited(_line, data), do: {:keep_state, data}
+  # Not implemented yet: unexpected-message policy.
+  defp route_unsolicited(line, data) do
+    publish(data, line)
+    {:keep_state, data}
+  end
+
+  defp publish(%Data{line_publisher: nil}, _line), do: :ok
+
+  defp publish(%Data{line_publisher: {publisher, publisher_opts}}, line) do
+    :ok = publisher.publish(line, publisher_opts)
+  end
 
   defp reply(data, from, response) do
     {:keep_state, data, [{:reply, from, response}]}
