@@ -9,9 +9,7 @@ defmodule Panelmeter.Application do
   def start(_type, _args) do
     children =
       [
-        # Children for all targets
-        # Starts a worker by calling: Panelmeter.Worker.start_link(arg)
-        # {Panelmeter.Worker, arg},
+        {Phoenix.PubSub, name: Panelmeter.PubSub}
       ] ++ target_children()
 
     # See https://elixir.hexdocs.pm/Supervisor.html

@@ -3,10 +3,10 @@ defmodule ADMX3652.Command do
   Pure descriptions of individual ADMX3652 commands.
 
   A command describes one ordinary SCPI command and its response data. It
-  does not verify the device error queue; `ADMX3652.Transaction` adds that
+  does not verify the device error queue; `ADMX3652.Exchange` adds that
   common machinery around every command.
 
-  This module is deliberately small while the command and transaction shapes
+  This module is deliberately small while the command and exchange shapes
   are being reviewed. More commands are not implemented yet.
   """
 
@@ -56,7 +56,7 @@ defmodule ADMX3652.Command do
   Offers a decoded line to a command's response accumulator.
 
   Known asynchronous and lifecycle messages are routed outside this module.
-  `:not_claimed` lets the transaction owner decide whether an interleaved
+  `:not_claimed` lets the exchange owner decide whether an interleaved
   message is harmless or evidence that protocol correlation has been lost.
   """
   @spec claim(t(), response(), Protocol.decoded()) :: claim_result()
