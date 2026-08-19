@@ -50,6 +50,18 @@ defmodule ADMX3652 do
   end
 
   @doc """
+  Sends an arbitrary line to the instrument without verification.
+
+  A raw command bypasses exchange tracking and invalidates the shadow state.
+  It is accepted while the instrument is idle in `:ready`, or while it is
+  `:desynchronised`.
+  """
+  @spec raw_command(:gen_statem.server_ref(), binary()) :: :ok | {:error, term()}
+  def raw_command(meter, raw_line) when is_binary(raw_line) do
+    :gen_statem.call(meter, {:raw_command, raw_line}, :infinity)
+  end
+
+  @doc """
   Starts the ADMX3652 process and its transport.
 
   Options:
@@ -91,18 +103,19 @@ defmodule ADMX3652 do
 
     {:ok, transport} = transport_mod.start_link(self(), transport_opts)
 
-    state =
+    {state, shadow} =
       case transport_mod.enabled?(transport) do
-        {:ok, false} -> :off
-        {:ok, true} -> :desynchronised
-        {:error, _reason} -> :desynchronised
+        {:ok, false} -> {:off, %Shadow{}}
+        {:ok, true} -> {:desynchronised, :unknown}
+        {:error, _reason} -> {:desynchronised, :unknown}
       end
 
     {:ok, state,
      %StateData{
        transport_mod: transport_mod,
        transport: transport,
-       pubsub: pubsub
+       pubsub: pubsub,
+       shadow: shadow
      }}
   end
 
@@ -122,6 +135,14 @@ defmodule ADMX3652 do
   def configuring(:info, message, data), do: handle_info(message, data)
   def configuring(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def configuring(_event_type, _event_content, data), do: {:keep_state, data}
+
+  def ready(
+        {:call, from},
+        {:raw_command, raw_line},
+        %StateData{current: nil} = data
+      ) do
+    send_raw_command(data, from, raw_line)
+  end
 
   def ready({:call, from}, request, %StateData{current: nil} = data) do
     case command(request) do
@@ -169,6 +190,10 @@ defmodule ADMX3652 do
   end
 
   def ready(_event_type, _event_content, data), do: {:keep_state, data}
+
+  def desynchronised({:call, from}, {:raw_command, raw_line}, data) do
+    send_raw_command(data, from, raw_line)
+  end
 
   def desynchronised({:call, from}, _request, data),
     do: reply(data, from, {:error, :desynchronised})
@@ -240,6 +265,18 @@ defmodule ADMX3652 do
 
     {:next_state, :desynchronised, data,
      [{{:timeout, :exchange}, :cancel}, {:reply, from, {:error, reason}}]}
+  end
+
+  defp send_raw_command(data, from, raw_line) do
+    data = %{data | shadow: :unknown}
+
+    response =
+      case write_all(data, nil, [raw_line]) do
+        :ok -> :ok
+        {:error, reason} -> {:error, {:transport, reason}}
+      end
+
+    {:next_state, :desynchronised, data, [{:reply, from, response}]}
   end
 
   defp write_all(data, exchange_id, writes) do

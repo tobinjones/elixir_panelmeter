@@ -49,13 +49,15 @@ defmodule ADMX3652Test do
                pubsub: pubsub
              )
 
-    assert {:desynchronised, %ADMX3652.StateData{}} = :sys.get_state(meter)
+    assert {:desynchronised, %ADMX3652.StateData{shadow: :unknown}} =
+             :sys.get_state(meter)
   end
 
   test "rejects commands while off" do
     {:ok, meter} = start_meter()
 
     assert ADMX3652.get_range(meter, 1) == {:error, :off}
+    assert ADMX3652.raw_command(meter, "*IDN?") == {:error, :off}
   end
 
   test "publishes received lines even when no exchange is active" do
@@ -75,6 +77,36 @@ defmodule ADMX3652Test do
 
     assert is_integer(timestamp)
     assert value == -0.0000006
+  end
+
+  test "a raw command from ready is published without an exchange id and desynchronises" do
+    pubsub = start_line_pubsub()
+    {:ok, meter} = start_ready_meter(pubsub: pubsub)
+
+    assert ADMX3652.raw_command(meter, "SYSTem:VERSion?") == :ok
+
+    assert_receive {:transport_write, "SYSTem:VERSion?"}
+
+    assert_receive %Line{
+      direction: :sent,
+      raw: "SYSTem:VERSion?",
+      decoded: nil,
+      exchange_id: nil
+    }
+
+    assert {:desynchronised, %StateData{current: nil, shadow: :unknown}} =
+             :sys.get_state(meter)
+  end
+
+  test "raw commands remain available while desynchronised" do
+    {:ok, meter} =
+      start_meter(transport_opts: [test: self(), enabled: true])
+
+    assert ADMX3652.raw_command(meter, "*IDN?") == :ok
+    assert_receive {:transport_write, "*IDN?"}
+
+    assert {:desynchronised, %StateData{shadow: :unknown}} = :sys.get_state(meter)
+    assert ADMX3652.get_range(meter, 1) == {:error, :desynchronised}
   end
 
   test "gets a range through a verified exchange" do
@@ -238,6 +270,22 @@ defmodule ADMX3652Test do
     assert_receive {:transport_write, "SYSTem:ERRor?"}
 
     assert ADMX3652.get_range(meter, 2) == {:error, :busy}
+
+    {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
+    TestTransport.send_line(transport, ~s(0,"No error"))
+
+    assert Task.await(task) == {:ok, 2.0}
+  end
+
+  test "rejects a raw command while an exchange is active" do
+    {:ok, meter} = start_ready_meter()
+
+    task = Task.async(fn -> ADMX3652.get_range(meter, 1) end)
+    assert_receive {:transport_write, "CONFigure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    assert ADMX3652.raw_command(meter, "*IDN?") == {:error, :busy}
 
     {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
