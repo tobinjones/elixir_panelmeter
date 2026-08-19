@@ -2,7 +2,7 @@ defmodule ADMX3652.Command do
   @moduledoc """
   Pure descriptions of individual ADMX3652 commands.
 
-  A command describes one ordinary SCPI command and its primary response. It
+  A command describes one ordinary SCPI command and its response data. It
   does not verify the device error queue; `ADMX3652.Transaction` adds that
   common machinery around every command.
 
@@ -15,16 +15,17 @@ defmodule ADMX3652.Command do
   @type range :: float() | :auto
   @type t :: {:get_range, Protocol.channel()} | {:set_range, Protocol.channel(), range()}
 
-  @type state :: {:await_range, Protocol.channel()}
+  @type response :: term()
   @type shadow_delta :: :none | {:set_range, Protocol.channel(), range()}
 
-  @type prepare_result ::
-          {:await, state(), iodata()}
-          | {:done, result :: term(), shadow_delta(), iodata()}
-
-  @type offer_result ::
-          {:done, result :: term(), shadow_delta()}
+  @type claim_result ::
+          {:claimed, response()}
           | :not_claimed
+          | {:invalid, term()}
+
+  @type finish_result ::
+          {:ok, result :: term(), shadow_delta()}
+          | {:error, term()}
 
   @ranges [0.2, 2.0, 20.0, :auto]
 
@@ -37,50 +38,57 @@ defmodule ADMX3652.Command do
   end
 
   @doc """
-  Produces the command state and single wire command for a transaction.
+  Produces an initial response accumulator and one wire command.
 
-  `:done` means that the device command is silent, not that the transaction has
-  succeeded. The result and shadow delta remain provisional until the shared
-  error-queue check succeeds.
+  The accumulator is intentionally command-specific. A future multi-line
+  response can use a map without imposing an ordered response phase.
   """
-  @spec prepare(t()) :: prepare_result()
+  @spec prepare(t()) :: {response(), iodata()}
   def prepare({:get_range, channel}) do
-    {:await, {:await_range, channel}, ["CONFigure:VOLTage:DC? ", Integer.to_string(channel)]}
+    {nil, "CONFigure:VOLTage:DC? #{channel}"}
   end
 
   def prepare({:set_range, channel, range}) do
-    write = [
-      "CONFigure:VOLTage:DC ",
-      Integer.to_string(channel),
-      ?,,
-      format_range(range)
-    ]
-
-    {:done, :ok, {:set_range, channel, range}, write}
+    {nil, "CONFigure:VOLTage:DC #{channel},#{range}"}
   end
 
   @doc """
-  Offers a decoded line to a command awaiting its primary response.
+  Offers a decoded line to a command's response accumulator.
 
   Known asynchronous and lifecycle messages are routed outside this module.
   `:not_claimed` lets the transaction owner decide whether an interleaved
   message is harmless or evidence that protocol correlation has been lost.
   """
-  @spec offer(t(), state(), Protocol.decoded()) :: offer_result()
-  def offer(
-        {:get_range, channel},
-        {:await_range, channel},
-        {:range, channel, value}
-      ) do
+  @spec claim(t(), response(), Protocol.decoded()) :: claim_result()
+  def claim({:get_range, channel}, nil, {:range, channel, value}) do
     # A resolved range does not reveal whether auto-ranging is enabled, so it
     # must not replace the configured range mode in the eventual shadow state.
-    {:done, {:ok, value}, :none}
+    {:claimed, value}
   end
 
-  def offer({:get_range, channel}, {:await_range, channel}, _decoded) do
+  def claim({:get_range, channel}, _value, {:range, channel, _duplicate}) do
+    {:invalid, :duplicate_range_response}
+  end
+
+  def claim({:get_range, _channel}, _response, _decoded) do
     :not_claimed
   end
 
-  defp format_range(:auto), do: "AUTO"
-  defp format_range(range), do: Float.to_string(range)
+  def claim({:set_range, _channel, _range}, _response, _decoded) do
+    :not_claimed
+  end
+
+  @doc """
+  Validates and interprets accumulated response data at the clean error-queue
+  sentinel.
+
+  Results and shadow deltas become valid only after this function succeeds.
+  """
+  @spec finish(t(), response()) :: finish_result()
+  def finish({:get_range, _channel}, nil), do: {:error, :missing_range_response}
+  def finish({:get_range, _channel}, value), do: {:ok, {:ok, value}, :none}
+
+  def finish({:set_range, channel, range}, nil) do
+    {:ok, :ok, {:set_range, channel, range}}
+  end
 end

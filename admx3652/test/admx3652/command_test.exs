@@ -3,23 +3,30 @@ defmodule ADMX3652.CommandTest do
 
   alias ADMX3652.Command
 
-  test "prepares a range query that awaits a matching response" do
+  test "accumulates and finishes a range query" do
     command = Command.get_range(1)
 
-    assert {:await, {:await_range, 1}, write} = Command.prepare(command)
-    assert IO.iodata_to_binary(write) == "CONFigure:VOLTage:DC? 1"
+    assert {nil, "CONFigure:VOLTage:DC? 1"} = Command.prepare(command)
+    assert {:claimed, 2.0} = Command.claim(command, nil, {:range, 1, 2.0})
+    assert {:ok, {:ok, 2.0}, :none} = Command.finish(command, 2.0)
 
-    assert Command.offer(command, {:await_range, 1}, {:range, 1, 2.0}) ==
-             {:done, {:ok, 2.0}, :none}
+    assert {:error, :missing_range_response} = Command.finish(command, nil)
 
-    assert Command.offer(command, {:await_range, 1}, {:measurement, 1, 1.0}) ==
+    assert Command.claim(command, nil, {:measurement, 1, 1.0}) ==
              :not_claimed
   end
 
-  test "prepares a silent range setter with a provisional shadow change" do
+  test "finishes a silent range setter at the shared sentinel" do
     command = Command.set_range(2, :auto)
 
-    assert {:done, :ok, {:set_range, 2, :auto}, write} = Command.prepare(command)
-    assert IO.iodata_to_binary(write) == "CONFigure:VOLTage:DC 2,AUTO"
+    assert {nil, "CONFigure:VOLTage:DC 2,auto"} = Command.prepare(command)
+    assert {:ok, :ok, {:set_range, 2, :auto}} = Command.finish(command, nil)
+  end
+
+  test "rejects a duplicate range response" do
+    command = Command.get_range(1)
+
+    assert {:invalid, :duplicate_range_response} =
+             Command.claim(command, 2.0, {:range, 1, 2.0})
   end
 end

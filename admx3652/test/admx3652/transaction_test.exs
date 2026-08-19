@@ -6,7 +6,7 @@ defmodule ADMX3652.TransactionTest do
   test "starts a query and its error pop together" do
     {transaction, writes} = Transaction.start(Command.get_range(1))
 
-    assert %Transaction{primary: {:awaiting, {:await_range, 1}}} = transaction
+    assert %Transaction{response: nil} = transaction
 
     assert Enum.map(writes, &IO.iodata_to_binary/1) ==
              ["CONFigure:VOLTage:DC? 1", "SYSTem:ERRor?"]
@@ -25,7 +25,7 @@ defmodule ADMX3652.TransactionTest do
   test "a silent setter is provisional until the clean error sentinel" do
     {transaction, writes} = Transaction.start(Command.set_range(1, 2.0))
 
-    assert %Transaction{primary: {:done, :ok, {:set_range, 1, 2.0}}} = transaction
+    assert %Transaction{response: nil} = transaction
     assert length(writes) == 2
 
     assert {:complete, :ok, {:set_range, 1, 2.0}} =
@@ -61,10 +61,10 @@ defmodule ADMX3652.TransactionTest do
              Transaction.offer(transaction, {:error_queue, 0, "No error"})
   end
 
-  test "a clean sentinel without the promised query response is invalid" do
+  test "a clean sentinel without the promised range response is invalid" do
     {transaction, _writes} = Transaction.start(Command.get_range(1))
 
-    assert {:invalid, :missing_primary_response} =
+    assert {:invalid, :missing_range_response} =
              Transaction.offer(transaction, {:error_queue, 0, "No error"})
   end
 
@@ -72,5 +72,15 @@ defmodule ADMX3652.TransactionTest do
     {transaction, _writes} = Transaction.start(Command.get_range(1))
 
     assert :not_claimed = Transaction.offer(transaction, {:measurement, 2, 1.25})
+  end
+
+  test "rejects a duplicate claimed response" do
+    {transaction, _writes} = Transaction.start(Command.get_range(1))
+
+    assert {:continue, transaction, []} =
+             Transaction.offer(transaction, {:range, 1, 2.0})
+
+    assert {:invalid, {:command_response, :duplicate_range_response}} =
+             Transaction.offer(transaction, {:range, 1, 2.0})
   end
 end

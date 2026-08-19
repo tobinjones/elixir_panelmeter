@@ -15,13 +15,9 @@ defmodule ADMX3652.Transaction do
 
   @error_query "SYSTem:ERRor?"
 
-  @type primary ::
-          {:awaiting, Command.state()}
-          | {:done, result :: term(), Command.shadow_delta()}
-
   @type t :: %__MODULE__{
           command: Command.t(),
-          primary: primary(),
+          response: Command.response(),
           errors: [{integer(), binary()}]
         }
 
@@ -31,8 +27,8 @@ defmodule ADMX3652.Transaction do
           | :not_claimed
           | {:invalid, term()}
 
-  @enforce_keys [:command, :primary]
-  defstruct [:command, :primary, errors: []]
+  @enforce_keys [:command]
+  defstruct [:command, :response, errors: []]
 
   @doc """
   Starts a transaction and returns all commands that should be written now.
@@ -43,25 +39,18 @@ defmodule ADMX3652.Transaction do
   """
   @spec start(Command.t()) :: {t(), [iodata()]}
   def start(command) do
-    {primary, write} =
-      case Command.prepare(command) do
-        {:await, command_state, write} ->
-          {{:awaiting, command_state}, write}
+    {response, write} = Command.prepare(command)
 
-        {:done, result, shadow_delta, write} ->
-          {{:done, result, shadow_delta}, write}
-      end
-
-    {%__MODULE__{command: command, primary: primary}, [write, @error_query]}
+    {%__MODULE__{command: command, response: response}, [write, @error_query]}
   end
 
   @doc """
   Offers one decoded device line to the transaction.
 
-  Device error entries are claimed before primary command responses. After a
+  Device error entries are claimed before command responses. After a
   nonzero entry, another error query is requested. A zero entry is the final
-  transaction sentinel: it either commits the provisional result, reports all
-  drained errors, or exposes a missing primary response.
+  transaction sentinel: it reports drained errors or asks the command to
+  validate and interpret everything it accumulated.
   """
   @spec offer(t(), Protocol.decoded()) :: step_result()
   def offer(transaction, {:error_queue, 0, _message}) do
@@ -77,30 +66,28 @@ defmodule ADMX3652.Transaction do
     {:continue, transaction, [@error_query]}
   end
 
-  def offer(%__MODULE__{primary: {:awaiting, command_state}} = transaction, decoded) do
-    case Command.offer(transaction.command, command_state, decoded) do
-      {:done, result, shadow_delta} ->
-        transaction = %{transaction | primary: {:done, result, shadow_delta}}
+  def offer(transaction, decoded) do
+    case Command.claim(transaction.command, transaction.response, decoded) do
+      {:claimed, response} ->
+        transaction = %{transaction | response: response}
         {:continue, transaction, []}
 
       :not_claimed ->
         :not_claimed
-    end
-  end
 
-  def offer(%__MODULE__{primary: {:done, _result, _shadow_delta}}, _decoded) do
-    :not_claimed
+      {:invalid, reason} ->
+        {:invalid, {:command_response, reason}}
+    end
   end
 
   defp finish(%__MODULE__{errors: [_ | _] = errors}) do
     {:complete, {:error, {:device, Enum.reverse(errors)}}, :none}
   end
 
-  defp finish(%__MODULE__{primary: {:done, result, shadow_delta}, errors: []}) do
-    {:complete, result, shadow_delta}
-  end
-
-  defp finish(%__MODULE__{primary: {:awaiting, _command_state}, errors: []}) do
-    {:invalid, :missing_primary_response}
+  defp finish(%__MODULE__{command: command, response: response, errors: []}) do
+    case Command.finish(command, response) do
+      {:ok, result, shadow_delta} -> {:complete, result, shadow_delta}
+      {:error, reason} -> {:invalid, reason}
+    end
   end
 end
