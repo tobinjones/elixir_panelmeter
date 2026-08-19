@@ -1,7 +1,7 @@
 defmodule ADMX3652Test do
   use ExUnit.Case, async: true
 
-  alias ADMX3652.{Data, Line, Shadow, TestLinePublisher, TestTransport}
+  alias ADMX3652.{Line, Shadow, StateData, TestLinePublisher, TestTransport}
 
   test "starts in :off and starts its transport" do
     assert {:ok, meter} =
@@ -11,7 +11,7 @@ defmodule ADMX3652Test do
              )
 
     assert {:off,
-            %ADMX3652.Data{
+            %ADMX3652.StateData{
               transport_mod: TestTransport,
               transport: transport
             }} = :sys.get_state(meter)
@@ -39,7 +39,7 @@ defmodule ADMX3652Test do
                transport_opts: [test: self(), enabled: true]
              )
 
-    assert {:desynchronised, %ADMX3652.Data{}} = :sys.get_state(meter)
+    assert {:desynchronised, %ADMX3652.StateData{}} = :sys.get_state(meter)
   end
 
   test "rejects commands while off" do
@@ -51,7 +51,7 @@ defmodule ADMX3652Test do
   test "publishes received lines even when no exchange is active" do
     {:ok, meter} = start_meter(line_publisher: {TestLinePublisher, self()})
 
-    {:off, %Data{transport: transport}} = :sys.get_state(meter)
+    {:off, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "Channel1: -0.0000006 ")
 
     assert_receive {:published_line,
@@ -75,12 +75,12 @@ defmodule ADMX3652Test do
     assert_receive {:transport_write, "CONFigure:VOLTage:DC? 1"}
     assert_receive {:transport_write, "SYSTem:ERRor?"}
 
-    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
     TestTransport.send_line(transport, ~s(0,"No error"))
 
     assert Task.await(task) == {:ok, 2.0}
-    assert {:ready, %Data{current: nil, shadow: %Shadow{}}} = :sys.get_state(meter)
+    assert {:ready, %StateData{current: nil, shadow: %Shadow{}}} = :sys.get_state(meter)
   end
 
   test "publishes sent and claimed lines with one exchange id" do
@@ -107,7 +107,7 @@ defmodule ADMX3652Test do
                       exchange_id: ^exchange_id
                     }}
 
-    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
     TestTransport.send_line(transport, ~s(0,"No error"))
 
@@ -139,7 +139,7 @@ defmodule ADMX3652Test do
     assert_receive {:published_line, %Line{direction: :sent}}
     assert_receive {:published_line, %Line{direction: :sent}}
 
-    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
 
     assert_receive {:published_line, %Line{direction: :received, exchange_id: exchange_id}}
@@ -158,7 +158,7 @@ defmodule ADMX3652Test do
     assert Task.await(task) ==
              {:error, {:protocol, {:command_response, :duplicate_range_response}}}
 
-    assert {:desynchronised, %Data{shadow: :unknown}} = :sys.get_state(meter)
+    assert {:desynchronised, %StateData{shadow: :unknown}} = :sys.get_state(meter)
   end
 
   test "interleaves follow-up writes into the published line stream" do
@@ -181,7 +181,7 @@ defmodule ADMX3652Test do
                       exchange_id: ^exchange_id
                     }}
 
-    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, ~s(-224,"Illegal parameter value"))
 
     assert_receive {:published_line,
@@ -219,14 +219,14 @@ defmodule ADMX3652Test do
     assert_receive {:transport_write, "CONFigure:VOLTage:DC 2,auto"}
     assert_receive {:transport_write, "SYSTem:ERRor?"}
 
-    {:ready, %Data{transport: transport, shadow: shadow}} = :sys.get_state(meter)
+    {:ready, %StateData{transport: transport, shadow: shadow}} = :sys.get_state(meter)
     assert shadow.configured_range[2] == :unknown
 
     TestTransport.send_line(transport, ~s(0,"No error"))
 
     assert Task.await(task) == :ok
 
-    assert {:ready, %Data{shadow: shadow}} = :sys.get_state(meter)
+    assert {:ready, %StateData{shadow: shadow}} = :sys.get_state(meter)
     assert shadow.configured_range[2] == :auto
   end
 
@@ -239,7 +239,7 @@ defmodule ADMX3652Test do
 
     assert ADMX3652.get_range(meter, 2) == {:error, :busy}
 
-    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
     TestTransport.send_line(transport, ~s(0,"No error"))
 
@@ -253,7 +253,7 @@ defmodule ADMX3652Test do
     assert_receive {:transport_write, "CONFigure:VOLTage:DC 1,2.0"}
     assert_receive {:transport_write, "SYSTem:ERRor?"}
 
-    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, ~s(-224,"Illegal parameter value"))
     assert_receive {:transport_write, "SYSTem:ERRor?"}
     TestTransport.send_line(transport, ~s(0,"No error"))
@@ -261,7 +261,7 @@ defmodule ADMX3652Test do
     assert Task.await(task) ==
              {:error, {:device, [{-224, "Illegal parameter value"}]}}
 
-    assert {:ready, %Data{shadow: %Shadow{configured_range: configured_range}}} =
+    assert {:ready, %StateData{shadow: %Shadow{configured_range: configured_range}}} =
              :sys.get_state(meter)
 
     assert configured_range[1] == :unknown

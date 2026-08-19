@@ -14,7 +14,7 @@ defmodule ADMX3652 do
 
   @type state :: :off | :starting | :configuring | :ready | :desynchronised
 
-  defmodule Data do
+  defmodule StateData do
     @moduledoc false
 
     @enforce_keys [:transport_mod, :transport]
@@ -98,7 +98,7 @@ defmodule ADMX3652 do
       end
 
     {:ok, state,
-     %Data{
+     %StateData{
        transport_mod: transport_mod,
        transport: transport,
        line_publisher: line_publisher
@@ -122,7 +122,7 @@ defmodule ADMX3652 do
   def configuring(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def configuring(_event_type, _event_content, data), do: {:keep_state, data}
 
-  def ready({:call, from}, request, %Data{current: nil} = data) do
+  def ready({:call, from}, request, %StateData{current: nil} = data) do
     case command(request) do
       {:ok, command} -> start_exchange(data, from, command)
       :error -> reply(data, from, {:error, :unsupported_request})
@@ -132,14 +132,14 @@ defmodule ADMX3652 do
   def ready({:call, from}, _request, data), do: reply(data, from, {:error, :busy})
   def ready(:info, message, data), do: handle_info(message, data)
 
-  def ready(:internal, %Line{} = line, %Data{current: nil} = data) do
+  def ready(:internal, %Line{} = line, %StateData{current: nil} = data) do
     route_unsolicited(line, data)
   end
 
   def ready(
         :internal,
         %Line{} = line,
-        %Data{current: {from, exchange}} = data
+        %StateData{current: {from, exchange}} = data
       ) do
     case Exchange.offer(exchange, line.decoded) do
       {:continue, exchange, writes} ->
@@ -162,7 +162,7 @@ defmodule ADMX3652 do
   def ready(
         {:timeout, :exchange},
         :expired,
-        %Data{current: {from, _exchange}} = data
+        %StateData{current: {from, _exchange}} = data
       ) do
     fail_exchange(data, from, :timeout)
   end
@@ -178,7 +178,7 @@ defmodule ADMX3652 do
 
   defp handle_info(
          {:admx3652_transport, transport, {:line, raw_line}},
-         %Data{transport: transport} = data
+         %StateData{transport: transport} = data
        ) do
     line = %Line{
       direction: :received,
@@ -269,9 +269,9 @@ defmodule ADMX3652 do
     {:keep_state, data}
   end
 
-  defp publish(%Data{line_publisher: nil}, _line), do: :ok
+  defp publish(%StateData{line_publisher: nil}, _line), do: :ok
 
-  defp publish(%Data{line_publisher: {publisher, publisher_opts}}, line) do
+  defp publish(%StateData{line_publisher: {publisher, publisher_opts}}, line) do
     :ok = publisher.publish(line, publisher_opts)
   end
 
