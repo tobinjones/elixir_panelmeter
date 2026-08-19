@@ -48,7 +48,7 @@ defmodule ADMX3652Test do
     assert ADMX3652.get_range(meter, 1) == {:error, :off}
   end
 
-  test "gets a range through a verified transaction" do
+  test "gets a range through a verified exchange" do
     {:ok, meter} = start_ready_meter()
 
     task = Task.async(fn -> ADMX3652.get_range(meter, 1) end)
@@ -83,7 +83,7 @@ defmodule ADMX3652Test do
     assert shadow.configured_range[2] == :auto
   end
 
-  test "rejects a second command while a transaction is active" do
+  test "rejects a second command while an exchange is active" do
     {:ok, meter} = start_ready_meter()
 
     task = Task.async(fn -> ADMX3652.get_range(meter, 1) end)

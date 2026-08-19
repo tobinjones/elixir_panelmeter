@@ -2,7 +2,7 @@ defmodule ADMX3652.Shadow do
   @moduledoc """
   Driver state known to have been accepted by the ADMX3652.
 
-  This is deliberately limited to configured range while the transaction and
+  This is deliberately limited to configured range while the exchange and
   shadow-state boundary is being established. More settings are not
   implemented yet.
   """

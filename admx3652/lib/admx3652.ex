@@ -8,9 +8,9 @@ defmodule ADMX3652 do
 
   @behaviour :gen_statem
 
-  alias ADMX3652.{Command, Shadow, Transaction}
+  alias ADMX3652.{Command, Exchange, Shadow}
 
-  @transaction_timeout 1_000
+  @exchange_timeout 1_000
 
   @type state :: :off | :starting | :configuring | :ready | :desynchronised
 
@@ -23,7 +23,7 @@ defmodule ADMX3652 do
     @type t :: %__MODULE__{
             transport_mod: module(),
             transport: ADMX3652.Transport.t(),
-            current: nil | {:gen_statem.from(), Transaction.t()},
+            current: nil | {:gen_statem.from(), Exchange.t()},
             shadow: Shadow.t() | :unknown
           }
   end
@@ -112,7 +112,7 @@ defmodule ADMX3652 do
 
   def ready({:call, from}, request, %Data{current: nil} = data) do
     case command(request) do
-      {:ok, command} -> start_transaction(data, from, command)
+      {:ok, command} -> start_exchange(data, from, command)
       :error -> reply(data, from, {:error, :unsupported_request})
     end
   end
@@ -127,29 +127,29 @@ defmodule ADMX3652 do
   def ready(
         :internal,
         %ADMX3652.Line{} = line,
-        %Data{current: {from, transaction}} = data
+        %Data{current: {from, exchange}} = data
       ) do
-    case Transaction.offer(transaction, line.decoded) do
-      {:continue, transaction, writes} ->
-        continue_transaction(data, from, transaction, writes)
+    case Exchange.offer(exchange, line.decoded) do
+      {:continue, exchange, writes} ->
+        continue_exchange(data, from, exchange, writes)
 
       {:complete, result, shadow_delta} ->
-        finish_transaction(data, from, result, shadow_delta)
+        finish_exchange(data, from, result, shadow_delta)
 
       :not_claimed ->
         route_unsolicited(line, data)
 
       {:invalid, reason} ->
-        fail_transaction(data, from, {:protocol, reason})
+        fail_exchange(data, from, {:protocol, reason})
     end
   end
 
   def ready(
-        {:timeout, :transaction},
+        {:timeout, :exchange},
         :expired,
-        %Data{current: {from, _transaction}} = data
+        %Data{current: {from, _exchange}} = data
       ) do
-    fail_transaction(data, from, :timeout)
+    fail_exchange(data, from, :timeout)
   end
 
   def ready(_event_type, _event_content, data), do: {:keep_state, data}
@@ -185,42 +185,42 @@ defmodule ADMX3652 do
 
   defp command(_request), do: :error
 
-  defp start_transaction(data, from, command) do
-    {transaction, writes} = Transaction.start(command)
+  defp start_exchange(data, from, command) do
+    {exchange, writes} = Exchange.start(command)
 
     case write_all(data, writes) do
       :ok ->
-        data = %{data | current: {from, transaction}}
+        data = %{data | current: {from, exchange}}
 
-        {:keep_state, data, [{{:timeout, :transaction}, @transaction_timeout, :expired}]}
+        {:keep_state, data, [{{:timeout, :exchange}, @exchange_timeout, :expired}]}
 
       {:error, reason} ->
-        fail_transaction(data, from, {:transport, reason})
+        fail_exchange(data, from, {:transport, reason})
     end
   end
 
-  defp continue_transaction(data, from, transaction, writes) do
+  defp continue_exchange(data, from, exchange, writes) do
     case write_all(data, writes) do
       :ok ->
-        {:keep_state, %{data | current: {from, transaction}}}
+        {:keep_state, %{data | current: {from, exchange}}}
 
       {:error, reason} ->
-        fail_transaction(data, from, {:transport, reason})
+        fail_exchange(data, from, {:transport, reason})
     end
   end
 
-  defp finish_transaction(data, from, result, shadow_delta) do
+  defp finish_exchange(data, from, result, shadow_delta) do
     shadow = Shadow.apply(data.shadow, shadow_delta)
     data = %{data | current: nil, shadow: shadow}
 
-    {:keep_state, data, [{{:timeout, :transaction}, :cancel}, {:reply, from, result}]}
+    {:keep_state, data, [{{:timeout, :exchange}, :cancel}, {:reply, from, result}]}
   end
 
-  defp fail_transaction(data, from, reason) do
+  defp fail_exchange(data, from, reason) do
     data = %{data | current: nil, shadow: :unknown}
 
     {:next_state, :desynchronised, data,
-     [{{:timeout, :transaction}, :cancel}, {:reply, from, {:error, reason}}]}
+     [{{:timeout, :exchange}, :cancel}, {:reply, from, {:error, reason}}]}
   end
 
   defp write_all(data, writes) do
