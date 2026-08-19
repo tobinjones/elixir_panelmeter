@@ -42,7 +42,10 @@ defmodule ADMX3652 do
   end
 
   @doc """
-  Disables the instrument and enters `:off`.
+  Disables the instrument, interrupting any active exchange.
+
+  A successful request enters `:off`. If the transport fails, the driver
+  enters `:desynchronised` instead.
   """
   @spec disable(:gen_statem.server_ref()) :: :ok | {:error, term()}
   def disable(meter) do
@@ -173,7 +176,7 @@ defmodule ADMX3652 do
 
   def ready({:call, from}, :enable, data), do: reply(data, from, :ok)
 
-  def ready({:call, from}, :disable, %StateData{current: nil} = data) do
+  def ready({:call, from}, :disable, data) do
     disable_instrument(data, from)
   end
 
@@ -328,16 +331,28 @@ defmodule ADMX3652 do
   end
 
   defp disable_instrument(data, from) do
+    exchange_actions = interrupt_exchange(data.current)
+
     case data.transport_mod.set_enabled(data.transport, false) do
       :ok ->
         data = %{data | current: nil, shadow: %Shadow{}}
-        {:next_state, :off, data, [{:reply, from, :ok}]}
+        {:next_state, :off, data, exchange_actions ++ [{:reply, from, :ok}]}
 
       {:error, reason} ->
-        data = %{data | shadow: :unknown}
+        data = %{data | current: nil, shadow: :unknown}
 
-        {:next_state, :desynchronised, data, [{:reply, from, {:error, {:transport, reason}}}]}
+        {:next_state, :desynchronised, data,
+         exchange_actions ++ [{:reply, from, {:error, {:transport, reason}}}]}
     end
+  end
+
+  defp interrupt_exchange(nil), do: []
+
+  defp interrupt_exchange({exchange_from, _exchange}) do
+    [
+      {{:timeout, :exchange}, :cancel},
+      {:reply, exchange_from, {:error, :disabled}}
+    ]
   end
 
   defp send_raw_command(data, from, raw_line) do

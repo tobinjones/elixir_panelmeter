@@ -327,20 +327,19 @@ defmodule ADMX3652Test do
     assert Task.await(task) == {:ok, 2.0}
   end
 
-  test "rejects disable while an exchange is active" do
+  test "disable interrupts an active exchange" do
     {:ok, meter} = start_ready_meter()
 
     task = Task.async(fn -> ADMX3652.get_range(meter, 1) end)
     assert_receive {:transport_write, "CONFigure:VOLTage:DC? 1"}
     assert_receive {:transport_write, "SYSTem:ERRor?"}
 
-    assert ADMX3652.disable(meter) == {:error, :busy}
+    assert ADMX3652.disable(meter) == :ok
+    assert_receive {:transport_enabled, false}
 
-    {:ready, %StateData{transport: transport}} = :sys.get_state(meter)
-    TestTransport.send_line(transport, "CHAN[1]-RANGE: 2.000000")
-    TestTransport.send_line(transport, ~s(0,"No error"))
+    assert Task.await(task) == {:error, :disabled}
 
-    assert Task.await(task) == {:ok, 2.0}
+    assert {:off, %StateData{current: nil, shadow: %Shadow{}}} = :sys.get_state(meter)
   end
 
   test "does not commit a rejected setting" do
