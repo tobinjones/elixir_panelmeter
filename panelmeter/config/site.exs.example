@@ -1,0 +1,16 @@
+# Site-local values for a target build. Copy to config/site.exs, which is
+# git-ignored, and fill in. Environment variables of the same name
+# (PANELMETER_CLUSTER_COOKIE, PANELMETER_GOSSIP_SECRET, PANELMETER_NTP_SERVERS)
+# override anything set here.
+#
+# The cookie and the gossip secret are shared cluster identity, not per-user
+# credentials: every node that should join this cluster needs the same pair,
+# including the elixir-session bridge in .session.env. Anything on the LAN that
+# knows both can run code on the board, so treat them accordingly.
+[
+  cluster_cookie: "change_me_panelmeter_cluster",
+  gossip_secret: "change-me-gossip-secret",
+
+  # Only needed on a network with no route to the internet. Omit otherwise.
+  ntp_servers: ["192.0.2.10", "192.0.2.11"]
+]

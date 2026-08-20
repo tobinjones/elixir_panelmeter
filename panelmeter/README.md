@@ -28,7 +28,9 @@ UART and to make PWM0 available on GPIO18. See
 
 The target uses DHCP on wired `eth0`. `usb0` remains enabled as a direct-connect
 recovery interface, and Wi-Fi is not configured. The RPi3 has no real-time
-clock, so `nerves_time` synchronizes against `172.20.0.30` and `172.20.0.31`.
+clock, so `nerves_time` synchronizes at boot. On a network with no route to the
+internet, name the site's own servers in `config/site.exs` — see
+[`config/site.exs.example`](config/site.exs.example).
 
 ## Targets
 

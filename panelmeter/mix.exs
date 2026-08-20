@@ -55,6 +55,9 @@ defmodule Panelmeter.MixProject do
       # See config/host.exs for usage.
       {:nerves_runtime, "~> 0.13.12"},
       {:phoenix_pubsub, "~> 2.2"},
+      # Peer discovery for the cluster. Only used on target, where
+      # Panelmeter.Distribution starts it once the node has a name.
+      {:libcluster, "~> 3.5"},
       {:admx3652, path: "../admx3652"},
 
       # Hardware interfaces for the RPi3 transport. These also compile on the
@@ -89,11 +92,31 @@ defmodule Panelmeter.MixProject do
       overwrite: true,
       # Erlang distribution is not started automatically.
       # See https://nerves-pack.hexdocs.pm/readme.html#erlang-distribution
-      cookie: "#{@app}_cookie",
+      #
+      # The same cookie config/target.exs uses, from the same git-ignored
+      # source, so the pre-distribution cookie in vm.args and the one
+      # Panelmeter.Distribution sets cannot drift apart. A target build without
+      # it fails in config/target.exs, so the fallback here only ever reaches a
+      # host build, where distribution is the developer's business.
+      cookie: cluster_cookie(),
       include_erts: &Nerves.Release.erts/0,
       steps: [&Nerves.Release.init/1, :assemble],
       strip_beams: Mix.env() == :prod or [keep: ["Docs"]]
     ]
+  end
+
+  # See config/site.exs.example. Environment wins, then the git-ignored file.
+  defp cluster_cookie do
+    site =
+      if File.exists?("config/site.exs") do
+        {values, _bindings} = Code.eval_file("config/site.exs")
+        values
+      else
+        []
+      end
+
+    System.get_env("PANELMETER_CLUSTER_COOKIE") || site[:cluster_cookie] ||
+      "panelmeter_cookie_unset"
   end
 
   # Uncomment the following line if using Phoenix > 1.8.

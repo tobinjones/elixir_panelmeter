@@ -1,1 +1,16 @@
 _local/
+
+# Site-local cluster identity and NTP servers. See panelmeter/config/site.exs.example.
+panelmeter/config/site.exs
+
+# elixir-session bridge config: cookie and board address. See .session.env.example.
+.session.env
+
+# Elixir and Nerves build output
+_build/
+deps/
+*.ez
+*.fw
+erl_crash.dump
+.elixir_ls/
+.lexical/
