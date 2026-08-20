@@ -55,6 +55,12 @@ defmodule Panelmeter.MixProject do
       # See config/host.exs for usage.
       {:nerves_runtime, "~> 0.13.12"},
       {:phoenix_pubsub, "~> 2.2"},
+      {:admx3652, path: "../admx3652"},
+
+      # Hardware interfaces for the RPi3 transport. These also compile on the
+      # host so the transport can be exercised without target hardware.
+      {:circuits_uart, "~> 1.6"},
+      {:circuits_gpio, "~> 2.1"},
 
       # Dependencies for all targets except :host
       {:nerves_pack, "~> 0.7.1", targets: @all_targets},

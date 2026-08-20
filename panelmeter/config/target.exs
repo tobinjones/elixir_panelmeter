@@ -10,6 +10,12 @@ if Mix.target() == :rpi3 do
   #
   # Also diff config/boot/* against deps/nerves_system_rpi3/.
   config :nerves, :firmware, fwup_conf: "config/fwup.conf"
+
+  config :panelmeter, :admx3652,
+    name: Panelmeter.Meter,
+    transport: Panelmeter.Transport.Circuits,
+    transport_opts: [port: "ttyAMA0", speed: 460_800, en_gpio: "GPIO23"],
+    pubsub: Panelmeter.PubSub
 end
 
 # Use Ringlogger as the logger backend and remove :console.
@@ -38,6 +44,12 @@ config :nerves_runtime, startup_guard_enabled: true
 # Advance the system clock on devices without a real-time clock.
 config :nerves, :erlinit, update_clock: true
 
+# The RPi3 has no real-time clock. Use the same on-site NTP servers as the
+# proven firmware and briefly wait for nerves_time to establish a valid clock.
+config :nerves_time,
+  servers: ["172.20.0.30", "172.20.0.31"],
+  await_initialization_timeout: :timer.seconds(5)
+
 # Configure the device for SSH IEx prompt access and firmware updates
 #
 # * See https://nerves-ssh.hexdocs.pm/readme.html for general SSH configuration
@@ -61,19 +73,18 @@ config :nerves_ssh,
 
 # Configure the network using vintage_net
 #
-# Update regulatory_domain to your 2-letter country code E.g., "US"
+# This appliance uses wired Ethernet. usb0 remains available as a direct-connect
+# recovery path; Wi-Fi is deliberately not configured.
 #
 # See https://github.com/nerves-networking/vintage_net for more information
 config :vintage_net,
-  regulatory_domain: "00",
   config: [
     {"usb0", %{type: VintageNetDirect}},
     {"eth0",
      %{
        type: VintageNetEthernet,
        ipv4: %{method: :dhcp}
-     }},
-    {"wlan0", %{type: VintageNetWiFi}}
+     }}
   ]
 
 config :mdns_lite,
@@ -99,11 +110,6 @@ config :mdns_lite,
       protocol: "sftp-ssh",
       transport: "tcp",
       port: 22
-    },
-    %{
-      protocol: "epmd",
-      transport: "tcp",
-      port: 4369
     }
   ]
 

@@ -1,6 +1,34 @@
 # Panelmeter
 
-**TODO: Add description**
+Nerves firmware for the Raspberry Pi 3-based ADMX3652 panelmeter.
+
+## Hardware
+
+The firmware uses the following Raspberry Pi GPIO-header signals:
+
+| Function | BCM GPIO | Header pin | Linux interface |
+|---|---:|---:|---|
+| ADMX3652 UART TX | GPIO14 | 8 | `/dev/ttyAMA0` |
+| ADMX3652 UART RX | GPIO15 | 10 | `/dev/ttyAMA0` |
+| ADMX3652 CTRL | GPIO18 | 12 | `/sys/class/pwm/pwmchip0` |
+| ADMX3652 EN | GPIO23 | 16 | `GPIO23` |
+
+The UART runs at 460,800 baud. EN is controlled only through the GPIO input
+pull mode: no pull enables the module and pull-down disables it. Never configure
+GPIO23 as an output because the module's pull-up may be referenced to 5 V.
+
+GPIO18 is reserved for hardware PWM but the firmware does not currently drive
+CTRL.
+
+The RPi3 boot partition is customized to keep the kernel console off the meter's
+UART and to make PWM0 available on GPIO18. See
+[`RPI3_BOOT_CUSTOMIZATION.md`](RPI3_BOOT_CUSTOMIZATION.md).
+
+## Networking and time
+
+The target uses DHCP on wired `eth0`. `usb0` remains enabled as a direct-connect
+recovery interface, and Wi-Fi is not configured. The RPi3 has no real-time
+clock, so `nerves_time` synchronizes against `172.20.0.30` and `172.20.0.31`.
 
 ## Targets
 

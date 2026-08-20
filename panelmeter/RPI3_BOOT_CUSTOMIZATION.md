@@ -5,7 +5,9 @@ that:
 
 - the Linux kernel does not use the ADMX3652 UART;
 - onboard audio does not claim PWM0; and
-- hardware PWM0 is available on GPIO18.
+- hardware PWM0 is available on GPIO18;
+- camera and DSI touchscreen probing are disabled; and
+- only 64 MB is reserved for the GPU.
 
 These changes are specific to `nerves_system_rpi3` 2.1.1.
 
@@ -36,6 +38,12 @@ dtoverlay=pwm,pin=18,func=2
 ```
 
 `func=2` selects ALT5 for GPIO18.
+
+The panelmeter does not use a Raspberry Pi camera or DSI touchscreen, so camera
+auto-detection is disabled and the stock `rpi-ft5406` and `rpi-backlight`
+overlays are not loaded. `gpu_mem` is reduced from 192 MB to a conservative
+64 MB, returning 128 MB to Linux while retaining the framebuffer used by the
+initial `tty1` console.
 
 ## Custom fwup configuration
 
@@ -140,6 +148,8 @@ Confirm that:
 - `cmdline.txt` does not contain `console=serial0`;
 - `config.txt` contains `dtparam=audio=off`;
 - `config.txt` contains `dtoverlay=pwm,pin=18,func=2`; and
+- `config.txt` contains `camera_auto_detect=0` and `gpu_mem=64`;
+- `config.txt` does not load `rpi-ft5406` or `rpi-backlight`; and
 - `overlays/pwm.dtbo` exists.
 
 Remove the temporary image after inspection:

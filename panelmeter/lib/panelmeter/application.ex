@@ -31,11 +31,10 @@ defmodule Panelmeter.Application do
     end
   else
     defp target_children() do
-      [
-        # Children for all targets except host
-        # Starts a worker by calling: Target.Worker.start_link(arg)
-        # {Target.Worker, arg},
-      ]
+      case Application.fetch_env(:panelmeter, :admx3652) do
+        {:ok, opts} -> [{ADMX3652, opts}]
+        :error -> []
+      end
     end
   end
 end
