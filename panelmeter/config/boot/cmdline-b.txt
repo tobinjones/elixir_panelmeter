@@ -1,0 +1,3 @@
+# See cmdline-a.txt
+# CHANGED: Keep the kernel off the ADMX3652 UART.
+console=tty1 fbcon=scrollback:1024k root=/dev/mmcblk0p6 rootwait consoleblank=0 quiet

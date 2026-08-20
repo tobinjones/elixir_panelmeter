@@ -25,6 +25,8 @@
           # Fetching hex packages and the Nerves toolchain/system tarballs.
           pkgs.curl
           pkgs.git
+          pkgs.libmnl
+          pkgs.pkg-config
           pkgs.xz
           pkgs.unzip
         ];

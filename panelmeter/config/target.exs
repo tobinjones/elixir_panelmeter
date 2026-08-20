@@ -1,5 +1,17 @@
 import Config
 
+if Mix.target() == :rpi3 do
+  # MAINTENANCE: config/fwup.conf is a copy of the system's generated file and
+  # does not track it. After bumping nerves_system_rpi3, regenerate and re-apply
+  # the PANELMETER changes:
+  #
+  #   MIX_TARGET=rpi3 mix nerves.artifact.details nerves_system_rpi3 --copy-fwup-conf /tmp/new.conf
+  #   diff /tmp/new.conf config/fwup.conf
+  #
+  # Also diff config/boot/* against deps/nerves_system_rpi3/.
+  config :nerves, :firmware, fwup_conf: "config/fwup.conf"
+end
+
 # Use Ringlogger as the logger backend and remove :console.
 # See https://ring-logger.hexdocs.pm/readme.html for more information on
 # configuring ring_logger.
