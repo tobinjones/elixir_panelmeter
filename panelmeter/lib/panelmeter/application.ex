@@ -31,10 +31,19 @@ defmodule Panelmeter.Application do
     end
   else
     defp target_children() do
-      case Application.fetch_env(:panelmeter, :admx3652) do
-        {:ok, opts} -> [{ADMX3652, opts}]
-        :error -> []
-      end
+      meter =
+        case Application.fetch_env(:panelmeter, :admx3652) do
+          {:ok, opts} -> [{ADMX3652, opts}]
+          :error -> []
+        end
+
+      # Distribution starts libcluster into this supervisor once eth0 has an
+      # address and the node has a name. See Panelmeter.Distribution.
+      meter ++
+        [
+          {DynamicSupervisor, strategy: :one_for_one, name: Panelmeter.ClusterSupervisor},
+          Panelmeter.Distribution
+        ]
     end
   end
 end

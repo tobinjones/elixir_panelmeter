@@ -1,5 +1,19 @@
 import Config
 
+# Site-local values that must not be committed: the cluster cookie, the gossip
+# secret, and the NTP servers of an isolated network. `config/site.exs` is
+# git-ignored and evaluates to a keyword list; see config/site.exs.example.
+# Environment variables win over it, which is what CI would use.
+site =
+  if File.exists?("config/site.exs") do
+    {values, _bindings} = Code.eval_file("config/site.exs")
+    values
+  else
+    []
+  end
+
+site_value = fn key, var -> System.get_env(var) || site[key] end
+
 if Mix.target() == :rpi3 do
   # MAINTENANCE: config/fwup.conf is a copy of the system's generated file and
   # does not track it. After bumping nerves_system_rpi3, regenerate and re-apply
@@ -44,11 +58,23 @@ config :nerves_runtime, startup_guard_enabled: true
 # Advance the system clock on devices without a real-time clock.
 config :nerves, :erlinit, update_clock: true
 
-# The RPi3 has no real-time clock. Use the same on-site NTP servers as the
-# proven firmware and briefly wait for nerves_time to establish a valid clock.
-config :nerves_time,
-  servers: ["172.20.0.30", "172.20.0.31"],
-  await_initialization_timeout: :timer.seconds(5)
+# The RPi3 has no real-time clock, so briefly wait for nerves_time to establish
+# one. A site on an isolated network has to name its own servers — set
+# PANELMETER_NTP_SERVERS (comma separated) or `:ntp_servers` in config/site.exs.
+# With neither, nerves_time uses its public pool default, which is right for a
+# board with a route to the internet and useless for one without.
+config :nerves_time, await_initialization_timeout: :timer.seconds(5)
+
+case site_value.(:ntp_servers, "PANELMETER_NTP_SERVERS") do
+  nil ->
+    :ok
+
+  servers when is_list(servers) ->
+    config :nerves_time, servers: servers
+
+  list ->
+    config :nerves_time, servers: String.split(list, ",", trim: true) |> Enum.map(&String.trim/1)
+end
 
 # Configure the device for SSH IEx prompt access and firmware updates
 #
@@ -111,6 +137,54 @@ config :mdns_lite,
       transport: "tcp",
       port: 22
     }
+  ]
+
+# Erlang distribution and clustering
+#
+# The node name is not set here — the device names itself `panelmeter@<eth0 ip>`
+# at runtime, once vintage_net has a DHCP lease. See Panelmeter.Distribution.
+#
+# The cookie and the gossip secret together are what let a node join this
+# cluster, and joining the cluster is remote code execution on the board, so
+# neither is committed. Supply both per build, from the environment or from
+# config/site.exs. A target build refuses to produce firmware without them, in
+# the same spirit as the SSH key check above: firmware anyone can join is worse
+# than a build that fails.
+required = fn key, var ->
+  site_value.(key, var) ||
+    Mix.raise("""
+    #{var} is not set and config/site.exs does not supply :#{key}.
+
+    The cluster cookie and the gossip secret decide who may join this board's
+    Erlang cluster, so they are not in the repository. Export both, or copy
+    config/site.exs.example to config/site.exs and fill it in.
+    """)
+end
+
+cluster_cookie = required.(:cluster_cookie, "PANELMETER_CLUSTER_COOKIE")
+gossip_secret = required.(:gossip_secret, "PANELMETER_GOSSIP_SECRET")
+
+config :panelmeter, cluster_cookie: String.to_atom(to_string(cluster_cookie))
+
+# Cluster.Strategy.Gossip discovers peers over multicast UDP, so no node has to
+# know any other's address — which matters because every end of this is on a
+# DHCP lease. `secret` encrypts the gossip and keeps this cluster distinct from
+# anything else on the default multicast group, including the nerves_joiner
+# prototype. The Erlang cookie is still what ultimately gates a connection;
+# this just stops the connection being attempted.
+config :libcluster,
+  topologies: [
+    panelmeter: [
+      strategy: Cluster.Strategy.Gossip,
+      config: [
+        port: 45892,
+        if_addr: "0.0.0.0",
+        multicast_addr: "233.252.1.32",
+        # keep packets on the local network
+        multicast_ttl: 1,
+        secret: gossip_secret
+      ]
+    ]
   ]
 
 # Import target specific config. This must remain at the bottom
