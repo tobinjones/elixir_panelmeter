@@ -78,6 +78,30 @@ Where both channels are pending, a restart also demotes whichever channel was co
 
 Do not request a reading from a channel that already owes one. Because the instrument reports nothing and readings carry no correlation token, the lost request is undetectable: the reading that eventually arrives is indistinguishable from the one the first request asked for, but its conversion began at the later request.
 
+### Configuration changes during a conversion
+
+Commands that arrive while a conversion is running are not all treated alike. A conversion may be restarted, discarded, or left entirely alone, depending on the command.
+
+**Observed:** Reconfiguring the channel that is converting restarts its conversion, timed from the reconfiguring command and using the new setting. This applies to `CONFigure:VOLTage:DC:NPLCycles` and to `CONFigure:VOLTage:DC`, and matches the behaviour of a repeated `MEASure:VOLTage:DC?` described above.
+
+Times are measured from a `MEASure:VOLTage:DC? 1` at 0 ms:
+
+| Command sent during the conversion | Reading |
+|---|---|
+| NPLC 10 to 100 at 102 ms | 4109 ms |
+| NPLC 10 to 100 at 352 ms | 4359 ms |
+| NPLC 100 to 10 at 102 ms | 506 ms |
+| NPLC of channel 2 at 102 ms | 404 ms, unaffected |
+| Range of channel 1 at 102 ms, NPLC 10 | 506 ms |
+
+**Observed:** Changing the trigger source discards a conversion in progress. `TRIGger:SOURce EXTernal` sent 102 ms into a 403.6 ms conversion, and again at 755 ms into a conversion due at 808 ms, produced no reading in either case. Returning to `TRIGger:SOURce INTernal` does not release the discarded reading; it is lost. The next `MEASure:VOLTage:DC?` under internal trigger behaves normally.
+
+**Observed:** `CONFigure:CONTINUOUS:READ` does not disturb a conversion in progress, in either direction. Enabling continuous read on the converting channel lets the conversion complete on its original schedule, and that reading becomes the first of the stream; disabling continuous read likewise allows the conversion in flight to complete. Enabling continuous read on the *other* channel has no effect on the conversion at all.
+
+Commands scoped to the other channel, and queries such as `SYSTem:ERRor?`, leave a conversion in progress untouched.
+
+None of these cases report anything. The error queue remains empty, so a reading discarded or rescheduled this way is indistinguishable from one that was never requested. Complete or abandon an outstanding reading before reconfiguring the channel it belongs to.
+
 ### Effect of `MEASure` on a streaming channel
 
 **Observed:** If `MEASure:VOLTage:DC?` is sent to a channel that is already streaming under internal trigger, one reading is returned and that channel is left in single-read mode. No error is reported.
@@ -93,6 +117,8 @@ TRIGger:SOURce EXTernal
 ```
 
 CTRL responds to a rising edge. Minimum specified pulse width is 1 µs.
+
+Selecting external triggering discards any conversion already in progress; see [Configuration changes during a conversion](#configuration-changes-during-a-conversion).
 
 ### Single-read external trigger
 

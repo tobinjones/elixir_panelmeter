@@ -174,6 +174,8 @@ CONFigure:VOLTage:DC:NPLCycles {1|2},{n}
 
 Accepted values are described under [NPLC and aperture](measurements.md#nplc-and-aperture). The [baud-rate restriction](serial-interface.md#baud-rate-and-nplc) also applies.
 
+Changing NPLC restarts a conversion already running on that channel; see [Configuration changes during a conversion](triggering.md#configuration-changes-during-a-conversion).
+
 ### `CONFigure:VOLTage:DC:NPLCycles?`
 
 **Function:** Read channel NPLC.
@@ -283,6 +285,8 @@ TRIGger:SOURce {INTernal|EXTernal}
 **Default:** `INTernal`
 
 No commands are provided for trigger slope, delay, count, or software trigger.
+
+Changing the trigger source discards a conversion already in progress; see [Configuration changes during a conversion](triggering.md#configuration-changes-during-a-conversion).
 
 ### `TRIGger:SOURce?`
 
