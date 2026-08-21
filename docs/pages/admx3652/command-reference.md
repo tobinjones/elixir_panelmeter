@@ -174,6 +174,8 @@ CONFigure:VOLTage:DC:NPLCycles {1|2},{n}
 
 Accepted values are described under [NPLC and aperture](measurements.md#nplc-and-aperture). The [baud-rate restriction](serial-interface.md#baud-rate-and-nplc) also applies.
 
+Changing NPLC restarts a conversion already running on that channel; see [Configuration changes during a conversion](triggering.md#configuration-changes-during-a-conversion).
+
 ### `CONFigure:VOLTage:DC:NPLCycles?`
 
 **Function:** Read channel NPLC.
@@ -248,7 +250,7 @@ regardless of the active configuration.
 MEASure:VOLTage:DC? {1|2}
 ```
 
-With internal trigger, one voltage reading is returned.
+With internal trigger, one voltage reading is returned. Sending this command again before that reading arrives restarts the conversion rather than queueing a second one; see [Overlapping `MEASure` requests](triggering.md#overlapping-measure-requests).
 
 With external trigger, the channel is armed and the command returns channel enable state instead of a voltage.
 
@@ -283,6 +285,8 @@ TRIGger:SOURce {INTernal|EXTernal}
 **Default:** `INTernal`
 
 No commands are provided for trigger slope, delay, count, or software trigger.
+
+Changing the trigger source discards a conversion already in progress; see [Configuration changes during a conversion](triggering.md#configuration-changes-during-a-conversion).
 
 ### `TRIGger:SOURce?`
 
