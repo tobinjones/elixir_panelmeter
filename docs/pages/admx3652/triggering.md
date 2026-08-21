@@ -40,6 +40,44 @@ Stop acquisition with:
 CONFigure:CONTINUOUS:READ 1,OFF
 ```
 
+### Overlapping `MEASure` requests
+
+A conversion in progress can be disturbed by a further `MEASure:VOLTage:DC?` arriving before it completes. The rule differs by channel.
+
+**Observed:** A second `MEASure:VOLTage:DC?` for a channel whose conversion is already in progress abandons that conversion and restarts it. One reading is produced, a full aperture after the last request; the earlier requests yield nothing. Requests are neither queued nor ignored, and no error is queued.
+
+At NPLC = 10, 50 Hz, conversion 403.6 ms, with times measured from the first request:
+
+| Requests on channel 1 | Readings |
+|---|---|
+| 0 ms | 404 ms |
+| 0, 52 ms | 456 ms |
+| 0, 52, 104 ms | 508 ms |
+| 0, 22, 44, 66, 88 ms | 492 ms |
+| 0, 302 ms | 706 ms |
+| 0, 382 ms | 785 ms |
+| 0, 422 ms | 404 ms, 826 ms |
+| 0, 502 ms | 404 ms, 906 ms |
+
+The restarted conversion takes a full aperture, not the remainder of one. At NPLC = 100, conversion 4006.8 ms, two requests 3502 ms apart produce a single reading at 7509 ms, and two 4502 ms apart produce readings at 4007 ms and 8509 ms.
+
+**Observed:** A `MEASure:VOLTage:DC?` for the *other* channel is queued instead, and does not disturb the conversion in progress. There is one pending slot per channel, so no more than two requests are ever outstanding.
+
+Where both channels are pending, a restart also demotes whichever channel was converting to the back of the queue, regardless of which channel was re-requested:
+
+| Requests, 52 ms apart | Readings |
+|---|---|
+| `1`, `2` | Channel 1 at 404 ms, channel 2 at 805 ms |
+| `2`, `1` | Channel 2 at 404 ms, channel 1 at 805 ms |
+| `1`, `2`, `1` | Channel 2 at 508 ms, channel 1 at 908 ms |
+| `1`, `2`, `2` | Channel 2 at 508 ms, channel 1 at 909 ms |
+| `1`, `1`, `2` | Channel 1 at 456 ms, channel 2 at 857 ms |
+| `2`, `1`, `1` | Channel 1 at 508 ms, channel 2 at 909 ms |
+| `2`, `2`, `1` | Channel 2 at 456 ms, channel 1 at 856 ms |
+| `1`, `2`, `1`, `2` | Channel 1 at 560 ms, channel 2 at 960 ms |
+
+Do not request a reading from a channel that already owes one. Because the instrument reports nothing and readings carry no correlation token, the lost request is undetectable: the reading that eventually arrives is indistinguishable from the one the first request asked for, but its conversion began at the later request.
+
 ### Effect of `MEASure` on a streaming channel
 
 **Observed:** If `MEASure:VOLTage:DC?` is sent to a channel that is already streaming under internal trigger, one reading is returned and that channel is left in single-read mode. No error is reported.

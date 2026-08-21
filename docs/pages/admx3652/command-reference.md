@@ -248,7 +248,7 @@ regardless of the active configuration.
 MEASure:VOLTage:DC? {1|2}
 ```
 
-With internal trigger, one voltage reading is returned.
+With internal trigger, one voltage reading is returned. Sending this command again before that reading arrives restarts the conversion rather than queueing a second one; see [Overlapping `MEASure` requests](triggering.md#overlapping-measure-requests).
 
 With external trigger, the channel is armed and the command returns channel enable state instead of a voltage.
 
