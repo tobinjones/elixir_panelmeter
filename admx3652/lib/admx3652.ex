@@ -35,6 +35,18 @@ defmodule ADMX3652 do
   end
 
   @doc """
+  Resets and restarts the instrument, interrupting any active exchange.
+
+  Reset is accepted whenever the instrument is powered. A successful request
+  enters `:starting`; when the instrument reports that it is ready, the driver
+  reapplies the startup configuration before returning to `:ready`.
+  """
+  @spec reset(:gen_statem.server_ref()) :: :ok | {:error, term()}
+  def reset(meter) do
+    :gen_statem.call(meter, :reset, :infinity)
+  end
+
+  @doc """
   Reads the currently resolved range for a channel.
   """
   @spec get_range(:gen_statem.server_ref(), ADMX3652.Protocol.channel()) ::

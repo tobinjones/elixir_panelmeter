@@ -105,6 +105,7 @@ defmodule ADMX3652.StateMachine do
 
   def starting({:call, from}, :enable, data), do: reply(data, from, :ok)
   def starting({:call, from}, :disable, data), do: disable_instrument(data, from)
+  def starting({:call, from}, :reset, data), do: reset_instrument(data, from)
 
   def starting({:call, from}, {:raw_command, raw_line}, data) do
     send_raw_command(data, from, raw_line)
@@ -132,6 +133,7 @@ defmodule ADMX3652.StateMachine do
 
   def configuring({:call, from}, :enable, data), do: reply(data, from, :ok)
   def configuring({:call, from}, :disable, data), do: disable_instrument(data, from)
+  def configuring({:call, from}, :reset, data), do: reset_instrument(data, from)
 
   def configuring({:call, from}, {:raw_command, raw_line}, data) do
     send_raw_command(data, from, raw_line)
@@ -203,6 +205,8 @@ defmodule ADMX3652.StateMachine do
   def ready({:call, from}, :disable, data) do
     disable_instrument(data, from)
   end
+
+  def ready({:call, from}, :reset, data), do: reset_instrument(data, from)
 
   def ready(
         {:call, from},
@@ -295,6 +299,8 @@ defmodule ADMX3652.StateMachine do
   def desynchronised({:call, from}, :disable, data) do
     disable_instrument(data, from)
   end
+
+  def desynchronised({:call, from}, :reset, data), do: reset_instrument(data, from)
 
   def desynchronised({:call, from}, {:raw_command, raw_line}, data) do
     send_raw_command(data, from, raw_line)
@@ -440,6 +446,22 @@ defmodule ADMX3652.StateMachine do
         data = %{data | expected: %{}, shadow: :unknown}
 
         {:next_state, :desynchronised, data, [{:reply, from, {:error, {:transport, reason}}}]}
+    end
+  end
+
+  defp reset_instrument(data, from) do
+    exchange_actions = interrupt_exchange(data.current, :reset)
+    data = %{data | current: nil, pending: [], expected: %{}, shadow: :unknown}
+
+    case write_all(data, nil, ["*RST"]) do
+      {:ok, _sent_lines} ->
+        {:next_state, :starting, data,
+         exchange_actions ++
+           [{:state_timeout, @startup_timeout, :expired}, {:reply, from, :ok}]}
+
+      {:error, reason} ->
+        {:next_state, :desynchronised, data,
+         exchange_actions ++ [{:reply, from, {:error, {:transport, reason}}}]}
     end
   end
 

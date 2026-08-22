@@ -5,7 +5,7 @@ defmodule ADMX3652.TestTransport do
 
   @behaviour ADMX3652.Transport
 
-  defstruct [:owner, :test, enabled: false]
+  defstruct [:owner, :test, :write_error, enabled: false]
 
   @impl ADMX3652.Transport
   def start_link(owner, opts) do
@@ -43,11 +43,17 @@ defmodule ADMX3652.TestTransport do
      %__MODULE__{
        owner: owner,
        test: Keyword.fetch!(opts, :test),
+       write_error: Keyword.get(opts, :write_error),
        enabled: Keyword.get(opts, :enabled, false)
      }}
   end
 
   @impl GenServer
+  def handle_call({:write, _line}, _from, %{write_error: reason} = state)
+      when not is_nil(reason) do
+    {:reply, {:error, reason}, state}
+  end
+
   def handle_call({:write, line}, _from, state) do
     send(state.test, {:transport_write, line})
     {:reply, :ok, state}

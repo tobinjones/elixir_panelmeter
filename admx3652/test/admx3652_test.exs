@@ -144,6 +144,98 @@ defmodule ADMX3652Test do
              StateMachine.starting(:state_timeout, :expired, data)
   end
 
+  test "reset restarts a ready meter and reapplies its configuration" do
+    {:ok, meter} = start_ready_meter()
+
+    assert ADMX3652.reset(meter) == :ok
+    assert_receive {:transport_write, "*RST"}
+
+    assert_line(%Line{
+      direction: :sent,
+      raw: "*RST",
+      decoded: nil,
+      exchange_id: nil
+    })
+
+    assert {:starting,
+            %Data{
+              current: nil,
+              pending: [],
+              expected: %{},
+              shadow: :unknown,
+              transport: transport
+            }} =
+             :sys.get_state(meter)
+
+    TestTransport.send_line(transport, "DAQ is ready to use")
+    assert_line(%Line{decoded: {:device_message, :ready}, exchange_id: nil})
+    assert_receive {:transport_write, "SYSTem:PLC:SET 50"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+    assert {:configuring, %Data{current: {:configuring, _exchange}}} = :sys.get_state(meter)
+  end
+
+  test "reset interrupts an active exchange" do
+    {:ok, meter} = start_ready_meter()
+
+    task = Task.async(fn -> ADMX3652.get_range(meter, 1) end)
+    assert_receive {:transport_write, "CONFigure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    assert ADMX3652.reset(meter) == :ok
+    assert_receive {:transport_write, "*RST"}
+    assert Task.await(task) == {:error, :reset}
+
+    assert {:starting, %Data{current: nil, pending: [], expected: %{}, shadow: :unknown}} =
+             :sys.get_state(meter)
+  end
+
+  test "reset is accepted while starting, configuring, and desynchronised" do
+    {:ok, starting_meter} = start_meter()
+    assert ADMX3652.enable(starting_meter) == :ok
+    assert_receive {:transport_enabled, true}
+    assert ADMX3652.reset(starting_meter) == :ok
+    assert_receive {:transport_write, "*RST"}
+    assert {:starting, %Data{shadow: :unknown}} = :sys.get_state(starting_meter)
+
+    {:ok, configuring_meter} = start_meter()
+    assert ADMX3652.enable(configuring_meter) == :ok
+    assert_receive {:transport_enabled, true}
+    {:starting, %Data{transport: transport}} = :sys.get_state(configuring_meter)
+    TestTransport.send_line(transport, "DAQ is ready to use")
+    assert_receive {:transport_write, "SYSTem:PLC:SET 50"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+    assert ADMX3652.reset(configuring_meter) == :ok
+    assert_receive {:transport_write, "*RST"}
+
+    assert {:starting, %Data{current: nil, pending: [], shadow: :unknown}} =
+             :sys.get_state(configuring_meter)
+
+    {:ok, desynchronised_meter} =
+      start_meter(transport_opts: [test: self(), enabled: true])
+
+    assert ADMX3652.reset(desynchronised_meter) == :ok
+    assert_receive {:transport_write, "*RST"}
+    assert {:starting, %Data{shadow: :unknown}} = :sys.get_state(desynchronised_meter)
+  end
+
+  test "reset is rejected while off" do
+    {:ok, meter} = start_meter()
+
+    assert ADMX3652.reset(meter) == {:error, :off}
+    refute_receive {:transport_write, "*RST"}
+    assert {:off, %Data{shadow: %Shadow{}}} = :sys.get_state(meter)
+  end
+
+  test "reset write failure desynchronises the meter" do
+    {:ok, meter} =
+      start_meter(transport_opts: [test: self(), enabled: true, write_error: :closed])
+
+    assert ADMX3652.reset(meter) == {:error, {:transport, :closed}}
+
+    assert {:desynchronised, %Data{current: nil, pending: [], expected: %{}, shadow: :unknown}} =
+             :sys.get_state(meter)
+  end
+
   test "a ready banner while off remains unsolicited" do
     {:ok, meter} = start_meter()
     {:off, %Data{transport: transport}} = :sys.get_state(meter)
