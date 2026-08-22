@@ -95,11 +95,11 @@ defmodule ADMX3652Test do
 
     TestTransport.send_line(transport, "ADC self check done")
 
-    assert_receive %Line{
+    assert_line(%Line{
       direction: :received,
       decoded: {:device_message, :adc_self_check_done},
       exchange_id: nil
-    }
+    })
 
     assert {:starting, %Data{}} = :sys.get_state(meter)
 
@@ -150,10 +150,10 @@ defmodule ADMX3652Test do
 
     TestTransport.send_line(transport, "DAQ is ready to use")
 
-    assert_receive %Line{
+    assert_line(%Line{
       decoded: {:device_message, :ready},
       exchange_id: nil
-    }
+    })
 
     assert {:off, %Data{}} = :sys.get_state(meter)
   end
@@ -165,11 +165,11 @@ defmodule ADMX3652Test do
     {:starting, %Data{transport: transport}} = :sys.get_state(meter)
 
     TestTransport.send_line(transport, "DAQ is ready to use")
-    assert_receive %Line{decoded: {:device_message, :ready}}
+    assert_line(%Line{decoded: {:device_message, :ready}})
     assert {:configuring, %Data{}} = :sys.get_state(meter)
 
     TestTransport.send_line(transport, "DAQ is ready to use")
-    assert_receive %Line{decoded: {:device_message, :ready}}
+    assert_line(%Line{decoded: {:device_message, :ready}})
     assert {:desynchronised, %Data{current: nil, shadow: :unknown}} = :sys.get_state(meter)
   end
 
@@ -181,7 +181,7 @@ defmodule ADMX3652Test do
     {:starting, %Data{transport: transport}} = :sys.get_state(meter)
 
     TestTransport.send_line(transport, "DAQ is ready to use")
-    assert_receive %Line{decoded: {:device_message, :ready}}
+    assert_line(%Line{decoded: {:device_message, :ready}})
 
     complete_silent_configuration_command(transport, "SYSTem:PLC:SET 50")
     complete_silent_configuration_command(transport, "CONFigure:VOLTage:DC 1,auto")
@@ -194,10 +194,10 @@ defmodule ADMX3652Test do
 
     TestTransport.send_line(transport, "Channel1: 1.250000")
 
-    assert_receive %Line{
+    assert_line(%Line{
       decoded: {:measurement, 1, 1.25},
       exchange_id: nil
-    }
+    })
 
     TestTransport.send_line(transport, "CHAN[1]-NPLC: 10.000000")
     TestTransport.send_line(transport, ~s(0,"No error"))
@@ -278,10 +278,10 @@ defmodule ADMX3652Test do
 
     TestTransport.send_line(transport, "DAQ is ready to use")
 
-    assert_receive %Line{
+    assert_line(%Line{
       decoded: {:device_message, :ready},
       exchange_id: nil
-    }
+    })
 
     assert {:desynchronised, %Data{current: nil, shadow: :unknown}} = :sys.get_state(meter)
   end
@@ -296,10 +296,10 @@ defmodule ADMX3652Test do
     {:ready, %Data{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, "DAQ is ready to use")
 
-    assert_receive %Line{
+    assert_line(%Line{
       decoded: {:device_message, :ready},
       exchange_id: nil
-    }
+    })
 
     assert Task.await(task) == {:error, :device_restarted}
     assert {:desynchronised, %Data{current: nil, shadow: :unknown}} = :sys.get_state(meter)
@@ -608,6 +608,137 @@ defmodule ADMX3652Test do
     assert shadow.configured_range[2] == :auto
   end
 
+  test "gets NPLC and commits the query result to shadow after verification" do
+    {:ok, meter} = start_ready_meter()
+
+    task = Task.async(fn -> ADMX3652.get_nplc(meter, 1) end)
+
+    assert_receive {:transport_write, "CONFigure:VOLTage:DC:NPLCycles? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    {:ready, %Data{transport: transport, shadow: shadow}} = :sys.get_state(meter)
+    assert shadow.nplc[1] == 10.0
+
+    TestTransport.send_line(transport, "CHAN[1]-NPLC: 0.500000")
+    TestTransport.send_line(transport, ~s(0,"No error"))
+
+    assert Task.await(task) == {:ok, 0.5}
+    assert {:ready, %Data{shadow: %Shadow{nplc: %{1 => 0.5}}}} = :sys.get_state(meter)
+  end
+
+  test "commits the remaining measurement configuration after verification" do
+    {:ok, meter} = start_ready_meter()
+
+    assert_verified_set(
+      meter,
+      fn -> ADMX3652.set_nplc(meter, 2, 3.5) end,
+      "CONFigure:VOLTage:DC:NPLCycles 2,3.5"
+    )
+
+    assert_verified_set(
+      meter,
+      fn -> ADMX3652.set_line_frequency(meter, 60) end,
+      "SYSTem:PLC:SET 60"
+    )
+
+    assert_verified_set(
+      meter,
+      fn -> ADMX3652.set_read_mode(meter, 1, :single) end,
+      "CONFigure:CONTINUOUS:READ 1,OFF"
+    )
+
+    assert_verified_set(
+      meter,
+      fn -> ADMX3652.set_trigger_source(meter, :external) end,
+      "TRIGger:SOURce EXTernal"
+    )
+
+    assert {:ready,
+            %Data{
+              shadow: %Shadow{
+                nplc: %{2 => 3.5},
+                line_frequency: 60,
+                read_mode: %{1 => :single},
+                trigger_source: :external
+              }
+            }} = :sys.get_state(meter)
+  end
+
+  test "gets and commits the trigger source" do
+    {:ok, meter} = start_ready_meter()
+
+    task = Task.async(fn -> ADMX3652.get_trigger_source(meter) end)
+
+    assert_receive {:transport_write, "TRIGger:SOURce?"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, "Trigger Mode : EXTernal")
+    TestTransport.send_line(transport, ~s(0,"No error"))
+
+    assert Task.await(task) == {:ok, :external}
+
+    assert {:ready, %Data{shadow: %Shadow{trigger_source: :external}}} =
+             :sys.get_state(meter)
+  end
+
+  test "rejects measurement while external triggering is selected" do
+    {:ok, meter} = start_ready_meter()
+
+    assert_verified_set(
+      meter,
+      fn -> ADMX3652.set_trigger_source(meter, :external) end,
+      "TRIGger:SOURce EXTernal"
+    )
+
+    assert ADMX3652.measure(meter, 1) == {:error, :unsupported_trigger_mode}
+    refute_receive {:transport_write, _line}
+  end
+
+  test "guards commands that would disrupt a requested reading" do
+    {:ok, meter} = start_ready_meter()
+
+    task = Task.async(fn -> ADMX3652.measure(meter, 1) end)
+    assert_receive {:transport_write, "MEASure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, ~s(0,"No error"))
+    assert {:ok, %ExpectedReading{}} = Task.await(task)
+
+    assert ADMX3652.measure(meter, 1) == {:error, :reading_pending}
+    assert ADMX3652.set_range(meter, 1, 2.0) == {:error, :reading_pending}
+    assert ADMX3652.set_nplc(meter, 1, 1) == {:error, :reading_pending}
+    assert ADMX3652.set_line_frequency(meter, 60) == {:error, :reading_pending}
+    assert ADMX3652.set_trigger_source(meter, :external) == {:error, :reading_pending}
+    refute_receive {:transport_write, _line}
+
+    assert_verified_set(
+      meter,
+      fn -> ADMX3652.set_read_mode(meter, 1, :continuous) end,
+      "CONFigure:CONTINUOUS:READ 1,ON"
+    )
+
+    TestTransport.send_line(transport, "Channel1: 1.25")
+    assert_reading(%Reading{channel: 1, value: 1.25, expected: %ExpectedReading{}})
+  end
+
+  test "measure commits single read mode after verification" do
+    {:ok, meter} = start_ready_meter()
+
+    task = Task.async(fn -> ADMX3652.measure(meter, 1) end)
+    assert_receive {:transport_write, "MEASure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, ~s(0,"No error"))
+
+    assert {:ok, %ExpectedReading{}} = Task.await(task)
+
+    assert {:ready, %Data{shadow: %Shadow{read_mode: %{1 => :single}}}} =
+             :sys.get_state(meter)
+  end
+
   test "rejects a second command while an exchange is active" do
     {:ok, meter} = start_ready_meter()
 
@@ -688,7 +819,17 @@ defmodule ADMX3652Test do
 
   defp start_ready_meter(opts \\ []) do
     with {:ok, meter} <- start_meter(opts) do
-      :sys.replace_state(meter, fn {_state, data} -> {:ready, data} end)
+      :sys.replace_state(meter, fn {_state, data} ->
+        shadow = %{
+          data.shadow
+          | line_frequency: 50,
+            nplc: %{1 => 10.0, 2 => 10.0},
+            trigger_source: :internal
+        }
+
+        {:ready, %{data | shadow: shadow}}
+      end)
+
       {:ok, meter}
     end
   end
@@ -720,4 +861,15 @@ defmodule ADMX3652Test do
   end
 
   defp wait_for_state(meter, _predicate, 0), do: :sys.get_state(meter)
+
+  defp assert_verified_set(meter, call, expected_write) do
+    task = Task.async(call)
+    assert_receive {:transport_write, ^expected_write}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, ~s(0,"No error"))
+
+    assert Task.await(task) == :ok
+  end
 end

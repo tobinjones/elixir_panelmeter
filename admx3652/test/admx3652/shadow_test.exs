@@ -30,6 +30,20 @@ defmodule ADMX3652.ShadowTest do
     refute Shadow.complete?(%{shadow | trigger_source: :unknown})
   end
 
+  test "applies verified measurement configuration" do
+    shadow =
+      %Shadow{}
+      |> Shadow.apply({:set_nplc, 1, 0.5})
+      |> Shadow.apply({:set_line_frequency, 60})
+      |> Shadow.apply({:set_read_mode, 2, :continuous})
+      |> Shadow.apply({:set_trigger_source, :external})
+
+    assert shadow.nplc[1] == 0.5
+    assert shadow.line_frequency == 60
+    assert shadow.read_mode[2] == :continuous
+    assert shadow.trigger_source == :external
+  end
+
   test "calculates the expected conversion time from NPLC and line frequency" do
     shadow = %Shadow{nplc: %{1 => 10.0, 2 => 0.5}, line_frequency: 50}
 

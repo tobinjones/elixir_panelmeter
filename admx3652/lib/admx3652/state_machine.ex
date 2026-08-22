@@ -100,6 +100,7 @@ defmodule ADMX3652.StateMachine do
   def off({:call, from}, :disable, data), do: reply(data, from, :ok)
   def off({:call, from}, _request, data), do: reply(data, from, {:error, :off})
   def off(:info, message, data), do: handle_info(message, data)
+  def off(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def off(_event_type, _event_content, data), do: {:keep_state, data}
 
   def starting({:call, from}, :enable, data), do: reply(data, from, :ok)
@@ -212,9 +213,36 @@ defmodule ADMX3652.StateMachine do
   end
 
   def ready({:call, from}, request, %Data{current: nil} = data) do
-    case command(request) do
-      {:ok, command} -> start_exchange(data, from, command)
-      :error -> reply(data, from, {:error, :unsupported_request})
+    case request do
+      {:get_range, channel} when channel in [1, 2] ->
+        start_exchange(data, from, Command.get_range(channel))
+
+      {:set_range, channel, range} ->
+        start_channel_reconfiguration(data, from, channel, Command.set_range(channel, range))
+
+      {:get_nplc, channel} when channel in [1, 2] ->
+        start_exchange(data, from, Command.get_nplc(channel))
+
+      {:set_nplc, channel, nplc} ->
+        start_channel_reconfiguration(data, from, channel, Command.set_nplc(channel, nplc))
+
+      {:set_line_frequency, line_frequency} ->
+        start_global_reconfiguration(data, from, Command.set_line_frequency(line_frequency))
+
+      {:set_read_mode, channel, read_mode} ->
+        start_exchange(data, from, Command.set_read_mode(channel, read_mode))
+
+      :get_trigger_source ->
+        start_exchange(data, from, Command.get_trigger_source())
+
+      {:set_trigger_source, trigger_source} ->
+        start_global_reconfiguration(data, from, Command.set_trigger_source(trigger_source))
+
+      {:measure, channel} when channel in [1, 2] ->
+        start_measurement(data, from, channel)
+
+      _unsupported ->
+        reply(data, from, {:error, :unsupported_request})
     end
   end
 
@@ -300,42 +328,6 @@ defmodule ADMX3652.StateMachine do
 
   defp handle_info(_message, data), do: {:keep_state, data}
 
-  defp command({:get_range, channel}) when channel in [1, 2] do
-    {:ok, Command.get_range(channel)}
-  end
-
-  defp command({:set_range, channel, range}) do
-    {:ok, Command.set_range(channel, range)}
-  end
-
-  defp command({:get_nplc, channel}) when channel in [1, 2] do
-    {:ok, Command.get_nplc(channel)}
-  end
-
-  defp command({:set_nplc, channel, nplc}) do
-    {:ok, Command.set_nplc(channel, nplc)}
-  end
-
-  defp command({:set_line_frequency, frequency}) do
-    {:ok, Command.set_line_frequency(frequency)}
-  end
-
-  defp command({:set_read_mode, channel, mode}) do
-    {:ok, Command.set_read_mode(channel, mode)}
-  end
-
-  defp command(:get_trigger_source), do: {:ok, Command.get_trigger_source()}
-
-  defp command({:set_trigger_source, source}) do
-    {:ok, Command.set_trigger_source(source)}
-  end
-
-  defp command({:measure, channel}) when channel in [1, 2] do
-    {:ok, Command.measure(channel)}
-  end
-
-  defp command(_request), do: :error
-
   defp start_exchange(data, :configuring, command) do
     exchange_id = make_ref()
     {exchange, writes} = Exchange.start(exchange_id, command)
@@ -363,6 +355,34 @@ defmodule ADMX3652.StateMachine do
 
       {:error, reason} ->
         fail_exchange(data, from, {:transport, reason})
+    end
+  end
+
+  defp start_channel_reconfiguration(data, from, channel, command) do
+    if Map.has_key?(data.expected, channel) do
+      reply(data, from, {:error, :reading_pending})
+    else
+      start_exchange(data, from, command)
+    end
+  end
+
+  defp start_global_reconfiguration(data, from, command) do
+    if map_size(data.expected) == 0 do
+      start_exchange(data, from, command)
+    else
+      reply(data, from, {:error, :reading_pending})
+    end
+  end
+
+  defp start_measurement(%Data{shadow: %Shadow{trigger_source: :external}} = data, from, _channel) do
+    reply(data, from, {:error, :unsupported_trigger_mode})
+  end
+
+  defp start_measurement(data, from, channel) do
+    if Map.has_key?(data.expected, channel) do
+      reply(data, from, {:error, :reading_pending})
+    else
+      start_exchange(data, from, Command.measure(channel))
     end
   end
 

@@ -226,5 +226,5 @@ defmodule ADMX3652.Command do
   def finish({:set_trigger_source, source}, nil),
     do: {:ok, :ok, {:set_trigger_source, source}}
 
-  def finish({:measure, _channel}, nil), do: {:ok, :ok, :none}
+  def finish({:measure, channel}, nil), do: {:ok, :ok, {:set_read_mode, channel, :single}}
 end

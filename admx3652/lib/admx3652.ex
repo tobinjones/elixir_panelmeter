@@ -53,52 +53,73 @@ defmodule ADMX3652 do
     :gen_statem.call(meter, command, :infinity)
   end
 
-  @doc "Reads the configured NPLC for a channel."
+  @doc """
+  Reads the configured NPLC aperture for a channel.
+  """
   @spec get_nplc(:gen_statem.server_ref(), ADMX3652.Protocol.channel()) ::
           {:ok, float()} | {:error, term()}
   def get_nplc(meter, channel) when channel in [1, 2] do
     :gen_statem.call(meter, {:get_nplc, channel}, :infinity)
   end
 
-  @doc "Sets the configured NPLC for a channel."
-  @spec set_nplc(:gen_statem.server_ref(), ADMX3652.Protocol.channel(), number()) ::
+  @doc """
+  Sets the NPLC aperture for a channel.
+
+  The instrument accepts `0.05`, `0.1`, `0.25`, `0.5`, and values greater
+  than or equal to `1`.
+  """
+  @spec set_nplc(:gen_statem.server_ref(), ADMX3652.Protocol.channel(), Command.nplc()) ::
           :ok | {:error, term()}
   def set_nplc(meter, channel, nplc) do
     command = Command.set_nplc(channel, nplc)
     :gen_statem.call(meter, command, :infinity)
   end
 
-  @doc "Sets the power-line frequency used for NPLC values of one or greater."
+  @doc """
+  Sets the power-line frequency used for NPLC values of 1 or greater.
+  """
   @spec set_line_frequency(:gen_statem.server_ref(), Command.line_frequency()) ::
           :ok | {:error, term()}
-  def set_line_frequency(meter, frequency) do
-    command = Command.set_line_frequency(frequency)
+  def set_line_frequency(meter, line_frequency) do
+    command = Command.set_line_frequency(line_frequency)
     :gen_statem.call(meter, command, :infinity)
   end
 
-  @doc "Sets a channel to single or continuous read mode."
+  @doc """
+  Selects single or continuous read mode for a channel.
+
+  A conversion already in progress may still produce one reading after
+  selecting `:single`.
+  """
   @spec set_read_mode(
           :gen_statem.server_ref(),
           ADMX3652.Protocol.channel(),
           Command.read_mode()
         ) :: :ok | {:error, term()}
-  def set_read_mode(meter, channel, mode) do
-    command = Command.set_read_mode(channel, mode)
+  def set_read_mode(meter, channel, read_mode) do
+    command = Command.set_read_mode(channel, read_mode)
     :gen_statem.call(meter, command, :infinity)
   end
 
-  @doc "Reads the shared trigger source."
+  @doc """
+  Reads the common trigger source.
+  """
   @spec get_trigger_source(:gen_statem.server_ref()) ::
           {:ok, Command.trigger_source()} | {:error, term()}
   def get_trigger_source(meter) do
     :gen_statem.call(meter, :get_trigger_source, :infinity)
   end
 
-  @doc "Sets the shared trigger source."
+  @doc """
+  Sets the common trigger source.
+
+  Single-shot external-trigger arming is not implemented. While external
+  triggering is selected, `measure/2` returns an error.
+  """
   @spec set_trigger_source(:gen_statem.server_ref(), Command.trigger_source()) ::
           :ok | {:error, term()}
-  def set_trigger_source(meter, source) do
-    command = Command.set_trigger_source(source)
+  def set_trigger_source(meter, trigger_source) do
+    command = Command.set_trigger_source(trigger_source)
     :gen_statem.call(meter, command, :infinity)
   end
 
@@ -107,7 +128,9 @@ defmodule ADMX3652 do
 
   The call returns the expected reading once the command exchange has been
   verified. The reading itself is emitted later to the configured event target
-  and carries the same `ADMX3652.ExpectedReading` struct.
+  and carries the same `ADMX3652.ExpectedReading` struct. Measurements are
+  supported only with internal triggering, and a channel may have only one
+  requested reading outstanding.
   """
   @spec measure(:gen_statem.server_ref(), ADMX3652.Protocol.channel()) ::
           {:ok, ExpectedReading.t()} | {:error, term()}
