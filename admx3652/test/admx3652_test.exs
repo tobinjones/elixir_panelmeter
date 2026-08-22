@@ -1,10 +1,11 @@
 defmodule ADMX3652Test do
   use ExUnit.Case, async: true
 
-  alias ADMX3652.{Line, Shadow, TestTransport}
+  alias ADMX3652.{ExpectedReading, Line, Reading, Shadow, TestTransport}
   alias ADMX3652.StateMachine.Data
 
   @line_topic "admx3652:lines"
+  @reading_topic "admx3652:readings"
 
   test "starts in :off and starts its transport" do
     pubsub = start_pubsub()
@@ -111,6 +112,85 @@ defmodule ADMX3652Test do
 
     assert is_integer(timestamp)
     assert value == -0.0000006
+  end
+
+  test "publishes unsolicited measurements as readings without request metadata" do
+    pubsub = start_pubsub()
+    :ok = Phoenix.PubSub.subscribe(pubsub, @line_topic)
+    :ok = Phoenix.PubSub.subscribe(pubsub, @reading_topic)
+    {:ok, meter} = start_meter(pubsub: pubsub)
+
+    {:off, %Data{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, "Channel2: 1.25")
+
+    assert_receive %Reading{
+      channel: 2,
+      value: 1.25,
+      exchange_id: nil,
+      requested_at: nil,
+      expected_at: nil
+    }
+
+    assert_receive %Line{decoded: {:measurement, 2, 1.25}}
+  end
+
+  test "correlates a manual measurement and publishes it before its line" do
+    pubsub = start_pubsub()
+    :ok = Phoenix.PubSub.subscribe(pubsub, @line_topic)
+    :ok = Phoenix.PubSub.subscribe(pubsub, @reading_topic)
+    {:ok, meter} = start_ready_meter(pubsub: pubsub)
+
+    task = Task.async(fn -> ADMX3652.measure(meter, 1) end)
+
+    assert_receive {:transport_write, "MEASure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    assert_receive %Line{
+      direction: :sent,
+      raw: "MEASure:VOLTage:DC? 1",
+      exchange_id: exchange_id,
+      timestamp: sent_at
+    }
+
+    assert_receive %Line{direction: :sent, raw: "SYSTem:ERRor?", exchange_id: ^exchange_id}
+
+    assert {:ready,
+            %Data{
+              transport: transport,
+              expected: %{
+                1 => %ExpectedReading{
+                  exchange_id: ^exchange_id,
+                  sent_at: ^sent_at,
+                  expected_at: expected_at
+                }
+              }
+            }} = :sys.get_state(meter)
+
+    assert expected_at - sent_at ==
+             System.convert_time_unit(403_000, :microsecond, :native)
+
+    TestTransport.send_line(transport, "Channel1: 1.25")
+
+    assert_receive %Reading{
+      channel: 1,
+      value: 1.25,
+      exchange_id: ^exchange_id,
+      requested_at: ^sent_at,
+      expected_at: ^expected_at,
+      timestamp: received_at
+    }
+
+    assert_receive %Line{
+      decoded: {:measurement, 1, 1.25},
+      timestamp: ^received_at,
+      exchange_id: nil
+    }
+
+    assert {:ready, %Data{expected: %{}}} = :sys.get_state(meter)
+
+    TestTransport.send_line(transport, ~s(0,"No error"))
+    assert_receive %Line{decoded: {:error_queue, 0, "No error"}, exchange_id: ^exchange_id}
+    assert Task.await(task) == :ok
   end
 
   test "a raw command from ready is published without an exchange id and desynchronises" do

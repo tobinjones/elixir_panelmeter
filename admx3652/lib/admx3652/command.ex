@@ -13,7 +13,10 @@ defmodule ADMX3652.Command do
   alias ADMX3652.Protocol
 
   @type range :: float() | :auto
-  @type t :: {:get_range, Protocol.channel()} | {:set_range, Protocol.channel(), range()}
+  @type t ::
+          {:get_range, Protocol.channel()}
+          | {:set_range, Protocol.channel(), range()}
+          | {:measure, Protocol.channel()}
 
   @type response :: term()
   @type shadow_delta :: :none | {:set_range, Protocol.channel(), range()}
@@ -37,6 +40,9 @@ defmodule ADMX3652.Command do
     {:set_range, channel, range}
   end
 
+  @spec measure(Protocol.channel()) :: t()
+  def measure(channel) when channel in [1, 2], do: {:measure, channel}
+
   @doc """
   Produces an initial response accumulator and one wire command.
 
@@ -50,6 +56,10 @@ defmodule ADMX3652.Command do
 
   def prepare({:set_range, channel, range}) do
     {nil, "CONFigure:VOLTage:DC #{channel},#{range}"}
+  end
+
+  def prepare({:measure, channel}) do
+    {nil, "MEASure:VOLTage:DC? #{channel}"}
   end
 
   @doc """
@@ -78,6 +88,10 @@ defmodule ADMX3652.Command do
     :not_claimed
   end
 
+  def claim({:measure, _channel}, _response, _decoded) do
+    :not_claimed
+  end
+
   @doc """
   Validates and interprets accumulated response data at the clean error-queue
   sentinel.
@@ -91,4 +105,6 @@ defmodule ADMX3652.Command do
   def finish({:set_range, channel, range}, nil) do
     {:ok, :ok, {:set_range, channel, range}}
   end
+
+  def finish({:measure, _channel}, nil), do: {:ok, :ok, :none}
 end

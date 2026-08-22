@@ -3,10 +3,11 @@ defmodule ADMX3652.StateMachine do
 
   @behaviour :gen_statem
 
-  alias ADMX3652.{Command, Exchange, Line, Protocol, Shadow}
+  alias ADMX3652.{Command, Exchange, ExpectedReading, Line, Protocol, Reading, Shadow}
 
   @exchange_timeout 1_000
   @line_topic "admx3652:lines"
+  @reading_topic "admx3652:readings"
 
   @type state :: :off | :starting | :configuring | :ready | :desynchronised
 
@@ -14,13 +15,21 @@ defmodule ADMX3652.StateMachine do
     @moduledoc false
 
     @enforce_keys [:transport_mod, :transport, :pubsub]
-    defstruct [:transport_mod, :transport, :pubsub, current: nil, shadow: %Shadow{}]
+    defstruct [
+      :transport_mod,
+      :transport,
+      :pubsub,
+      current: nil,
+      expected: %{},
+      shadow: %Shadow{}
+    ]
 
     @type t :: %__MODULE__{
             transport_mod: module(),
             transport: ADMX3652.Transport.t(),
             pubsub: Phoenix.PubSub.t(),
             current: nil | {:gen_statem.from(), Exchange.t()},
+            expected: %{optional(ADMX3652.Protocol.channel()) => ExpectedReading.t()},
             shadow: Shadow.t() | :unknown
           }
   end
@@ -64,7 +73,7 @@ defmodule ADMX3652.StateMachine do
   def off({:call, from}, :disable, data), do: reply(data, from, :ok)
   def off({:call, from}, _request, data), do: reply(data, from, {:error, :off})
   def off(:info, message, data), do: handle_info(message, data)
-  def off(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
+  def off(:internal, %Line{} = line, data), do: process_line(line, data)
   def off(_event_type, _event_content, data), do: {:keep_state, data}
 
   def starting({:call, from}, :enable, data), do: reply(data, from, :ok)
@@ -76,7 +85,7 @@ defmodule ADMX3652.StateMachine do
 
   def starting({:call, from}, _request, data), do: reply(data, from, {:error, :starting})
   def starting(:info, message, data), do: handle_info(message, data)
-  def starting(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
+  def starting(:internal, %Line{} = line, data), do: process_line(line, data)
   def starting(_event_type, _event_content, data), do: {:keep_state, data}
 
   def configuring({:call, from}, :enable, data), do: reply(data, from, :ok)
@@ -90,7 +99,7 @@ defmodule ADMX3652.StateMachine do
     do: reply(data, from, {:error, :configuring})
 
   def configuring(:info, message, data), do: handle_info(message, data)
-  def configuring(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
+  def configuring(:internal, %Line{} = line, data), do: process_line(line, data)
   def configuring(_event_type, _event_content, data), do: {:keep_state, data}
 
   def ready({:call, from}, :enable, data), do: reply(data, from, :ok)
@@ -117,32 +126,7 @@ defmodule ADMX3652.StateMachine do
   def ready({:call, from}, _request, data), do: reply(data, from, {:error, :busy})
   def ready(:info, message, data), do: handle_info(message, data)
 
-  def ready(:internal, %Line{} = line, %Data{current: nil} = data) do
-    route_unsolicited(line, data)
-  end
-
-  def ready(
-        :internal,
-        %Line{} = line,
-        %Data{current: {from, exchange}} = data
-      ) do
-    case Exchange.offer(exchange, line.decoded) do
-      {:continue, exchange, writes} ->
-        publish(data, %{line | exchange_id: exchange.id})
-        continue_exchange(data, from, exchange, writes)
-
-      {:complete, result, shadow_delta} ->
-        publish(data, %{line | exchange_id: exchange.id})
-        finish_exchange(data, from, result, shadow_delta)
-
-      :not_claimed ->
-        route_unsolicited(line, data)
-
-      {:invalid, reason} ->
-        publish(data, line)
-        fail_exchange(data, from, {:protocol, reason})
-    end
-  end
+  def ready(:internal, %Line{} = line, data), do: process_line(line, data)
 
   def ready(
         {:timeout, :exchange},
@@ -168,7 +152,7 @@ defmodule ADMX3652.StateMachine do
     do: reply(data, from, {:error, :desynchronised})
 
   def desynchronised(:info, message, data), do: handle_info(message, data)
-  def desynchronised(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
+  def desynchronised(:internal, %Line{} = line, data), do: process_line(line, data)
   def desynchronised(_event_type, _event_content, data), do: {:keep_state, data}
 
   defp handle_info(
@@ -195,6 +179,10 @@ defmodule ADMX3652.StateMachine do
     {:ok, Command.set_range(channel, range)}
   end
 
+  defp command({:measure, channel}) when channel in [1, 2] do
+    {:ok, Command.measure(channel)}
+  end
+
   defp command(_request), do: :error
 
   defp start_exchange(data, from, command) do
@@ -202,8 +190,11 @@ defmodule ADMX3652.StateMachine do
     {exchange, writes} = Exchange.start(exchange_id, command)
 
     case write_all(data, exchange.id, writes) do
-      :ok ->
-        data = %{data | current: {from, exchange}}
+      {:ok, sent_lines} ->
+        data =
+          data
+          |> expect_reading(exchange, sent_lines)
+          |> Map.put(:current, {from, exchange})
 
         {:keep_state, data, [{{:timeout, :exchange}, @exchange_timeout, :expired}]}
 
@@ -214,7 +205,7 @@ defmodule ADMX3652.StateMachine do
 
   defp continue_exchange(data, from, exchange, writes) do
     case write_all(data, exchange.id, writes) do
-      :ok ->
+      {:ok, _sent_lines} ->
         {:keep_state, %{data | current: {from, exchange}}}
 
       {:error, reason} ->
@@ -222,15 +213,18 @@ defmodule ADMX3652.StateMachine do
     end
   end
 
-  defp finish_exchange(data, from, result, shadow_delta) do
+  defp finish_exchange(data, from, exchange, result, shadow_delta) do
     shadow = Shadow.apply(data.shadow, shadow_delta)
     data = %{data | current: nil, shadow: shadow}
+
+    data =
+      if match?({:error, _reason}, result), do: discard_expected(data, exchange.id), else: data
 
     {:keep_state, data, [{{:timeout, :exchange}, :cancel}, {:reply, from, result}]}
   end
 
   defp fail_exchange(data, from, reason) do
-    data = %{data | current: nil, shadow: :unknown}
+    data = %{data | current: nil, expected: %{}, shadow: :unknown}
 
     {:next_state, :desynchronised, data,
      [{{:timeout, :exchange}, :cancel}, {:reply, from, {:error, reason}}]}
@@ -239,11 +233,11 @@ defmodule ADMX3652.StateMachine do
   defp enable_instrument(data, from) do
     case data.transport_mod.set_enabled(data.transport, true) do
       :ok ->
-        data = %{data | shadow: :unknown}
+        data = %{data | expected: %{}, shadow: :unknown}
         {:next_state, :starting, data, [{:reply, from, :ok}]}
 
       {:error, reason} ->
-        data = %{data | shadow: :unknown}
+        data = %{data | expected: %{}, shadow: :unknown}
 
         {:next_state, :desynchronised, data, [{:reply, from, {:error, {:transport, reason}}}]}
     end
@@ -254,11 +248,11 @@ defmodule ADMX3652.StateMachine do
 
     case data.transport_mod.set_enabled(data.transport, false) do
       :ok ->
-        data = %{data | current: nil, shadow: %Shadow{}}
+        data = %{data | current: nil, expected: %{}, shadow: %Shadow{}}
         {:next_state, :off, data, exchange_actions ++ [{:reply, from, :ok}]}
 
       {:error, reason} ->
-        data = %{data | current: nil, shadow: :unknown}
+        data = %{data | current: nil, expected: %{}, shadow: :unknown}
 
         {:next_state, :desynchronised, data,
          exchange_actions ++ [{:reply, from, {:error, {:transport, reason}}}]}
@@ -275,11 +269,11 @@ defmodule ADMX3652.StateMachine do
   end
 
   defp send_raw_command(data, from, raw_line) do
-    data = %{data | shadow: :unknown}
+    data = %{data | expected: %{}, shadow: :unknown}
 
     response =
       case write_all(data, nil, [raw_line]) do
-        :ok -> :ok
+        {:ok, _sent_lines} -> :ok
         {:error, reason} -> {:error, {:transport, reason}}
       end
 
@@ -287,20 +281,22 @@ defmodule ADMX3652.StateMachine do
   end
 
   defp write_all(data, exchange_id, writes) do
-    Enum.reduce_while(writes, :ok, fn write, :ok ->
+    Enum.reduce_while(writes, {:ok, []}, fn write, {:ok, sent_lines} ->
       case data.transport_mod.write(data.transport, write) do
         :ok ->
           raw_line = IO.iodata_to_binary(write)
 
-          publish(data, %Line{
+          line = %Line{
             direction: :sent,
             raw: raw_line,
             timestamp: System.monotonic_time(),
             decoded: nil,
             exchange_id: exchange_id
-          })
+          }
 
-          {:cont, :ok}
+          publish_line(data, line)
+
+          {:cont, {:ok, [line | sent_lines]}}
 
         {:error, _reason} = error ->
           {:halt, error}
@@ -308,13 +304,89 @@ defmodule ADMX3652.StateMachine do
     end)
   end
 
-  # Not implemented yet: unexpected-message policy.
-  defp route_unsolicited(line, data) do
-    publish(data, line)
-    {:keep_state, data}
+  defp process_line(line, data) do
+    {line, exchange_effect} = offer_line(line, data.current)
+    data = publish_reading(line, data)
+    publish_line(data, line)
+    apply_exchange_effect(exchange_effect, data)
   end
 
-  defp publish(%Data{pubsub: pubsub}, line) do
+  defp offer_line(line, nil), do: {line, :none}
+
+  defp offer_line(line, {from, exchange}) do
+    case Exchange.offer(exchange, line.decoded) do
+      {:continue, exchange, writes} ->
+        {%{line | exchange_id: exchange.id}, {:continue, from, exchange, writes}}
+
+      {:complete, result, shadow_delta} ->
+        {%{line | exchange_id: exchange.id}, {:complete, from, exchange, result, shadow_delta}}
+
+      :not_claimed ->
+        {line, :none}
+
+      {:invalid, reason} ->
+        {line, {:invalid, from, reason}}
+    end
+  end
+
+  defp apply_exchange_effect(:none, data), do: {:keep_state, data}
+
+  defp apply_exchange_effect({:continue, from, exchange, writes}, data) do
+    continue_exchange(data, from, exchange, writes)
+  end
+
+  defp apply_exchange_effect({:complete, from, exchange, result, shadow_delta}, data) do
+    finish_exchange(data, from, exchange, result, shadow_delta)
+  end
+
+  defp apply_exchange_effect({:invalid, from, reason}, data) do
+    fail_exchange(data, from, {:protocol, reason})
+  end
+
+  defp expect_reading(data, %Exchange{command: {:measure, channel}} = exchange, sent_lines) do
+    [%Line{timestamp: sent_at} | _rest] = Enum.reverse(sent_lines)
+    expected = ExpectedReading.new(channel, exchange.id, sent_at, data.shadow)
+    %{data | expected: Map.put(data.expected, channel, expected)}
+  end
+
+  defp expect_reading(data, _exchange, _sent_lines), do: data
+
+  defp publish_reading(%Line{decoded: {:measurement, channel, value}} = line, data) do
+    publish_reading(data, line, channel, value)
+  end
+
+  defp publish_reading(%Line{decoded: {:overload, channel}} = line, data) do
+    publish_reading(data, line, channel, :overload)
+  end
+
+  defp publish_reading(_line, data), do: data
+
+  defp publish_reading(data, line, channel, value) do
+    {expected, expected_readings} = Map.pop(data.expected, channel)
+
+    reading = %Reading{
+      channel: channel,
+      value: value,
+      timestamp: line.timestamp,
+      exchange_id: expected && expected.exchange_id,
+      requested_at: expected && expected.sent_at,
+      expected_at: expected && expected.expected_at
+    }
+
+    :ok = Phoenix.PubSub.broadcast(data.pubsub, @reading_topic, reading)
+    %{data | expected: expected_readings}
+  end
+
+  defp discard_expected(data, exchange_id) do
+    expected =
+      Map.reject(data.expected, fn {_channel, expected} ->
+        expected.exchange_id == exchange_id
+      end)
+
+    %{data | expected: expected}
+  end
+
+  defp publish_line(%Data{pubsub: pubsub}, line) do
     :ok = Phoenix.PubSub.broadcast(pubsub, @line_topic, line)
   end
 
