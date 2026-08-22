@@ -23,6 +23,14 @@ defmodule ADMX3652.CommandTest do
     assert {:ok, :ok, {:set_range, 2, :auto}} = Command.finish(command, nil)
   end
 
+  test "a measurement finishes independently of its asynchronous reading" do
+    command = Command.measure(1)
+
+    assert {nil, "MEASure:VOLTage:DC? 1"} = Command.prepare(command)
+    assert :not_claimed = Command.claim(command, nil, {:measurement, 1, 1.25})
+    assert {:ok, :ok, :none} = Command.finish(command, nil)
+  end
+
   test "rejects a duplicate range response" do
     command = Command.get_range(1)
 

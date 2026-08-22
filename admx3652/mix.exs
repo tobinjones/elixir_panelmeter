@@ -21,9 +21,7 @@ defmodule Admx3652.MixProject do
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
-    [
-      {:phoenix_pubsub, "~> 2.2"}
-    ]
+    []
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]

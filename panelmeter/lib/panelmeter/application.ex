@@ -9,7 +9,12 @@ defmodule Panelmeter.Application do
   def start(_type, _args) do
     children =
       [
-        {Phoenix.PubSub, name: Panelmeter.PubSub}
+        {Phoenix.PubSub, name: Panelmeter.PubSub},
+        {Panelmeter.MeterEvents,
+         name: Panelmeter.MeterEvents,
+         pubsub: Panelmeter.PubSub,
+         line_topic: "admx3652:lines",
+         reading_topic: "admx3652:readings"}
       ] ++ target_children()
 
     # See https://elixir.hexdocs.pm/Supervisor.html

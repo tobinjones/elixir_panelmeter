@@ -21,6 +21,12 @@ defmodule ADMX3652.Shadow do
           trigger_source: Command.trigger_source() | :unknown
         }
 
+  @spec conversion_time(t(), 1 | 2) :: integer()
+  def conversion_time(%__MODULE__{} = shadow, channel) when channel in [1, 2] do
+    microseconds = conversion_time_us(shadow.nplc[channel], shadow.line_frequency)
+    System.convert_time_unit(microseconds, :microsecond, :native)
+  end
+
   @spec apply(t(), Command.shadow_delta()) :: t()
   def apply(shadow, :none), do: shadow
 
@@ -52,5 +58,14 @@ defmodule ADMX3652.Shadow do
       Enum.all?(shadow.read_mode, fn {_channel, value} -> value != :unknown end) and
       Enum.all?(shadow.nplc, fn {_channel, value} -> value != :unknown end) and
       shadow.trigger_source != :unknown
+  end
+
+  defp conversion_time_us(0.05, _line_frequency), do: 4_000
+  defp conversion_time_us(0.1, _line_frequency), do: 5_000
+  defp conversion_time_us(0.25, _line_frequency), do: 8_000
+  defp conversion_time_us(0.5, _line_frequency), do: 13_000
+
+  defp conversion_time_us(nplc, line_frequency) when nplc >= 1 do
+    ceil(2 * nplc / line_frequency * 1_000_000 + 3_000)
   end
 end

@@ -36,7 +36,7 @@ defmodule ADMX3652.Exchange do
   @doc """
   Starts an exchange and returns all commands that should be written now.
 
-  The owning process supplies the inert ID used to correlate published lines;
+  The owning process supplies the inert ID used to correlate emitted lines;
   it has no effect on protocol matching.
 
   The error query is sent immediately after the primary command. This means a

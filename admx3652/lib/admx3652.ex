@@ -5,7 +5,10 @@ defmodule ADMX3652 do
   This module provides the public API for starting and controlling a meter.
   """
 
-  alias ADMX3652.{Command, StateMachine}
+  alias ADMX3652.{Command, ExpectedReading, Line, Reading, StateMachine}
+
+  @type event_target :: pid() | atom() | {atom(), node()}
+  @type event :: {:line, Line.t()} | {:reading, Reading.t()}
 
   @doc """
   Enables the instrument.
@@ -100,6 +103,19 @@ defmodule ADMX3652 do
   end
 
   @doc """
+  Requests one asynchronous measurement from a channel.
+
+  The call returns the expected reading once the command exchange has been
+  verified. The reading itself is emitted later to the configured event target
+  and carries the same `ADMX3652.ExpectedReading` struct.
+  """
+  @spec measure(:gen_statem.server_ref(), ADMX3652.Protocol.channel()) ::
+          {:ok, ExpectedReading.t()} | {:error, term()}
+  def measure(meter, channel) when channel in [1, 2] do
+    :gen_statem.call(meter, {:measure, channel}, :infinity)
+  end
+
+  @doc """
   Sends an arbitrary line to the instrument without verification.
 
   A raw command bypasses exchange tracking and invalidates the shadow state.
@@ -118,8 +134,9 @@ defmodule ADMX3652 do
 
     * `:transport` - transport module (required)
     * `:transport_opts` - options passed to the transport (defaults to `[]`)
-    * `:pubsub` - registered name of a supervised `Phoenix.PubSub` server
-      (required); lines are broadcast on `"admx3652:lines"`
+    * `:event_target` - process destination that receives ordered driver events
+      as `{:admx3652, meter_pid, event}` messages (required), where `event` is
+      `{:line, line}` or `{:reading, reading}`
     * `:configuration` - an `ADMX3652.Configuration` applied after startup
       (defaults to `ADMX3652.Configuration.default/0`)
     * `:name` - optional `:gen_statem` registration name

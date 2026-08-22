@@ -29,7 +29,7 @@ if Mix.target() == :rpi3 do
     name: Panelmeter.Meter,
     transport: Panelmeter.Transport.Circuits,
     transport_opts: [port: "ttyAMA0", speed: 460_800, en_gpio: "GPIO23"],
-    pubsub: Panelmeter.PubSub
+    event_target: Panelmeter.MeterEvents
 end
 
 # Use Ringlogger as the logger backend and remove :console.

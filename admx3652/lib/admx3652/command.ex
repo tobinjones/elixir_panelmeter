@@ -26,6 +26,7 @@ defmodule ADMX3652.Command do
           | {:set_read_mode, Protocol.channel(), read_mode()}
           | :get_trigger_source
           | {:set_trigger_source, trigger_source()}
+          | {:measure, Protocol.channel()}
 
   @type response :: term()
   @type shadow_delta ::
@@ -97,6 +98,9 @@ defmodule ADMX3652.Command do
   @spec valid_trigger_source?(term()) :: boolean()
   def valid_trigger_source?(source), do: source in [:internal, :external]
 
+  @spec measure(Protocol.channel()) :: t()
+  def measure(channel) when channel in [1, 2], do: {:measure, channel}
+
   @doc """
   Produces an initial response accumulator and one wire command.
 
@@ -132,6 +136,10 @@ defmodule ADMX3652.Command do
   def prepare({:set_trigger_source, source}) do
     value = if source == :internal, do: "INTernal", else: "EXTernal"
     {nil, "TRIGger:SOURce #{value}"}
+  end
+
+  def prepare({:measure, channel}) do
+    {nil, "MEASure:VOLTage:DC? #{channel}"}
   end
 
   @doc """
@@ -178,6 +186,10 @@ defmodule ADMX3652.Command do
   def claim({:set_read_mode, _channel, _mode}, _response, _decoded), do: :not_claimed
   def claim({:set_trigger_source, _source}, _response, _decoded), do: :not_claimed
 
+  def claim({:measure, _channel}, _response, _decoded) do
+    :not_claimed
+  end
+
   @doc """
   Validates and interprets accumulated response data at the clean error-queue
   sentinel.
@@ -213,4 +225,6 @@ defmodule ADMX3652.Command do
 
   def finish({:set_trigger_source, source}, nil),
     do: {:ok, :ok, {:set_trigger_source, source}}
+
+  def finish({:measure, _channel}, nil), do: {:ok, :ok, :none}
 end
