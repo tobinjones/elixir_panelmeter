@@ -6,19 +6,17 @@ defmodule ADMX3652.StateMachine do
   alias ADMX3652.{Command, Exchange, ExpectedReading, Line, Protocol, Reading, Shadow}
 
   @exchange_timeout 1_000
-  @line_topic "admx3652:lines"
-  @reading_topic "admx3652:readings"
 
   @type state :: :off | :starting | :configuring | :ready | :desynchronised
 
   defmodule Data do
     @moduledoc false
 
-    @enforce_keys [:transport_mod, :transport, :pubsub]
+    @enforce_keys [:transport_mod, :transport, :event_target]
     defstruct [
       :transport_mod,
       :transport,
-      :pubsub,
+      :event_target,
       current: nil,
       expected: %{},
       shadow: %Shadow{}
@@ -27,7 +25,7 @@ defmodule ADMX3652.StateMachine do
     @type t :: %__MODULE__{
             transport_mod: module(),
             transport: ADMX3652.Transport.t(),
-            pubsub: Phoenix.PubSub.t(),
+            event_target: ADMX3652.event_target(),
             current: nil | {:gen_statem.from(), Exchange.t()},
             expected: %{optional(ADMX3652.Protocol.channel()) => ExpectedReading.t()},
             shadow: Shadow.t() | :unknown
@@ -49,7 +47,7 @@ defmodule ADMX3652.StateMachine do
   def init(opts) do
     transport_mod = Keyword.fetch!(opts, :transport)
     transport_opts = Keyword.get(opts, :transport_opts, [])
-    pubsub = Keyword.fetch!(opts, :pubsub)
+    event_target = Keyword.fetch!(opts, :event_target)
 
     {:ok, transport} = transport_mod.start_link(self(), transport_opts)
 
@@ -64,7 +62,7 @@ defmodule ADMX3652.StateMachine do
      %Data{
        transport_mod: transport_mod,
        transport: transport,
-       pubsub: pubsub,
+       event_target: event_target,
        shadow: shadow
      }}
   end
@@ -294,7 +292,7 @@ defmodule ADMX3652.StateMachine do
             exchange_id: exchange_id
           }
 
-          publish_line(data, line)
+          emit(data, {:line, line})
 
           {:cont, {:ok, [line | sent_lines]}}
 
@@ -306,8 +304,8 @@ defmodule ADMX3652.StateMachine do
 
   defp process_line(line, data) do
     {line, exchange_effect} = offer_line(line, data.current)
-    data = publish_reading(line, data)
-    publish_line(data, line)
+    data = emit_reading(line, data)
+    emit(data, {:line, line})
     apply_exchange_effect(exchange_effect, data)
   end
 
@@ -351,17 +349,17 @@ defmodule ADMX3652.StateMachine do
 
   defp expect_reading(data, _exchange, _sent_lines), do: data
 
-  defp publish_reading(%Line{decoded: {:measurement, channel, value}} = line, data) do
-    publish_reading(data, line, channel, value)
+  defp emit_reading(%Line{decoded: {:measurement, channel, value}} = line, data) do
+    emit_reading(data, line, channel, value)
   end
 
-  defp publish_reading(%Line{decoded: {:overload, channel}} = line, data) do
-    publish_reading(data, line, channel, :overload)
+  defp emit_reading(%Line{decoded: {:overload, channel}} = line, data) do
+    emit_reading(data, line, channel, :overload)
   end
 
-  defp publish_reading(_line, data), do: data
+  defp emit_reading(_line, data), do: data
 
-  defp publish_reading(data, line, channel, value) do
+  defp emit_reading(data, line, channel, value) do
     {expected, expected_readings} = Map.pop(data.expected, channel)
 
     reading = %Reading{
@@ -373,7 +371,7 @@ defmodule ADMX3652.StateMachine do
       expected_at: expected && expected.expected_at
     }
 
-    :ok = Phoenix.PubSub.broadcast(data.pubsub, @reading_topic, reading)
+    emit(data, {:reading, reading})
     %{data | expected: expected_readings}
   end
 
@@ -386,8 +384,9 @@ defmodule ADMX3652.StateMachine do
     %{data | expected: expected}
   end
 
-  defp publish_line(%Data{pubsub: pubsub}, line) do
-    :ok = Phoenix.PubSub.broadcast(pubsub, @line_topic, line)
+  defp emit(%Data{event_target: event_target}, event) do
+    send(event_target, {:admx3652, self(), event})
+    :ok
   end
 
   defp reply(data, from, response) do
