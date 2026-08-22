@@ -26,7 +26,7 @@ defmodule ADMX3652.StateMachine do
             transport_mod: module(),
             transport: ADMX3652.Transport.t(),
             event_target: ADMX3652.event_target(),
-            current: nil | {:gen_statem.from(), Exchange.t()},
+            current: nil | {:gen_statem.from(), Exchange.t(), ExpectedReading.t() | nil},
             expected: %{optional(ADMX3652.Protocol.channel()) => ExpectedReading.t()},
             shadow: Shadow.t() | :unknown
           }
@@ -129,7 +129,7 @@ defmodule ADMX3652.StateMachine do
   def ready(
         {:timeout, :exchange},
         :expired,
-        %Data{current: {from, _exchange}} = data
+        %Data{current: {from, _exchange, _expected}} = data
       ) do
     fail_exchange(data, from, :timeout)
   end
@@ -189,10 +189,8 @@ defmodule ADMX3652.StateMachine do
 
     case write_all(data, exchange.id, writes) do
       {:ok, sent_lines} ->
-        data =
-          data
-          |> expect_reading(exchange, sent_lines)
-          |> Map.put(:current, {from, exchange})
+        expected = expected_reading(exchange, sent_lines, data.shadow)
+        data = data |> expect(expected) |> Map.put(:current, {from, exchange, expected})
 
         {:keep_state, data, [{{:timeout, :exchange}, @exchange_timeout, :expired}]}
 
@@ -201,22 +199,24 @@ defmodule ADMX3652.StateMachine do
     end
   end
 
-  defp continue_exchange(data, from, exchange, writes) do
+  defp continue_exchange(data, from, exchange, expected, writes) do
     case write_all(data, exchange.id, writes) do
       {:ok, _sent_lines} ->
-        {:keep_state, %{data | current: {from, exchange}}}
+        {:keep_state, %{data | current: {from, exchange, expected}}}
 
       {:error, reason} ->
         fail_exchange(data, from, {:transport, reason})
     end
   end
 
-  defp finish_exchange(data, from, exchange, result, shadow_delta) do
+  defp finish_exchange(data, from, exchange, expected, result, shadow_delta) do
     shadow = Shadow.apply(data.shadow, shadow_delta)
     data = %{data | current: nil, shadow: shadow}
 
     data =
       if match?({:error, _reason}, result), do: discard_expected(data, exchange.id), else: data
+
+    result = expected_reading_reply(expected, result)
 
     {:keep_state, data, [{{:timeout, :exchange}, :cancel}, {:reply, from, result}]}
   end
@@ -259,7 +259,7 @@ defmodule ADMX3652.StateMachine do
 
   defp interrupt_exchange(nil), do: []
 
-  defp interrupt_exchange({exchange_from, _exchange}) do
+  defp interrupt_exchange({exchange_from, _exchange, _expected}) do
     [
       {{:timeout, :exchange}, :cancel},
       {:reply, exchange_from, {:error, :disabled}}
@@ -311,13 +311,14 @@ defmodule ADMX3652.StateMachine do
 
   defp offer_line(line, nil), do: {line, :none}
 
-  defp offer_line(line, {from, exchange}) do
+  defp offer_line(line, {from, exchange, expected}) do
     case Exchange.offer(exchange, line.decoded) do
       {:continue, exchange, writes} ->
-        {%{line | exchange_id: exchange.id}, {:continue, from, exchange, writes}}
+        {%{line | exchange_id: exchange.id}, {:continue, from, exchange, expected, writes}}
 
       {:complete, result, shadow_delta} ->
-        {%{line | exchange_id: exchange.id}, {:complete, from, exchange, result, shadow_delta}}
+        {%{line | exchange_id: exchange.id},
+         {:complete, from, exchange, expected, result, shadow_delta}}
 
       :not_claimed ->
         {line, :none}
@@ -329,25 +330,40 @@ defmodule ADMX3652.StateMachine do
 
   defp apply_exchange_effect(:none, data), do: {:keep_state, data}
 
-  defp apply_exchange_effect({:continue, from, exchange, writes}, data) do
-    continue_exchange(data, from, exchange, writes)
+  defp apply_exchange_effect({:continue, from, exchange, expected, writes}, data) do
+    continue_exchange(data, from, exchange, expected, writes)
   end
 
-  defp apply_exchange_effect({:complete, from, exchange, result, shadow_delta}, data) do
-    finish_exchange(data, from, exchange, result, shadow_delta)
+  defp apply_exchange_effect(
+         {:complete, from, exchange, expected, result, shadow_delta},
+         data
+       ) do
+    finish_exchange(data, from, exchange, expected, result, shadow_delta)
   end
 
   defp apply_exchange_effect({:invalid, from, reason}, data) do
     fail_exchange(data, from, {:protocol, reason})
   end
 
-  defp expect_reading(data, %Exchange{command: {:measure, channel}} = exchange, sent_lines) do
+  defp expected_reading(
+         %Exchange{command: {:measure, channel}} = exchange,
+         sent_lines,
+         shadow
+       ) do
     [%Line{timestamp: sent_at} | _rest] = Enum.reverse(sent_lines)
-    expected = ExpectedReading.new(channel, exchange.id, sent_at, data.shadow)
+    ExpectedReading.new(channel, exchange.id, sent_at, shadow)
+  end
+
+  defp expected_reading(_exchange, _sent_lines, _shadow), do: nil
+
+  defp expect(data, nil), do: data
+
+  defp expect(data, %ExpectedReading{channel: channel} = expected) do
     %{data | expected: Map.put(data.expected, channel, expected)}
   end
 
-  defp expect_reading(data, _exchange, _sent_lines), do: data
+  defp expected_reading_reply(%ExpectedReading{} = expected, :ok), do: {:ok, expected}
+  defp expected_reading_reply(_expected, result), do: result
 
   defp emit_reading(%Line{decoded: {:measurement, channel, value}} = line, data) do
     emit_reading(data, line, channel, value)
@@ -366,9 +382,7 @@ defmodule ADMX3652.StateMachine do
       channel: channel,
       value: value,
       timestamp: line.timestamp,
-      exchange_id: expected && expected.exchange_id,
-      requested_at: expected && expected.sent_at,
-      expected_at: expected && expected.expected_at
+      expected: expected
     }
 
     emit(data, {:reading, reading})

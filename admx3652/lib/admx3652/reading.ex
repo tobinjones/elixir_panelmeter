@@ -2,22 +2,20 @@ defmodule ADMX3652.Reading do
   @moduledoc """
   An asynchronous reading received from the ADMX3652.
 
-  Manual readings carry the originating exchange ID and the monotonic times
-  at which they were requested and expected. Continuous or otherwise
-  unsolicited readings leave those fields as `nil`.
+  A requested reading carries the exact `ADMX3652.ExpectedReading` returned by
+  `ADMX3652.measure/2`. Continuous or otherwise unsolicited readings leave
+  `expected` as `nil`.
   """
 
-  alias ADMX3652.{Exchange, Protocol}
+  alias ADMX3652.{ExpectedReading, Protocol}
 
   @enforce_keys [:channel, :value, :timestamp]
-  defstruct [:channel, :value, :timestamp, :exchange_id, :requested_at, :expected_at]
+  defstruct [:channel, :value, :timestamp, :expected]
 
   @type t :: %__MODULE__{
           channel: Protocol.channel(),
           value: float() | :overload,
           timestamp: integer(),
-          exchange_id: Exchange.id() | nil,
-          requested_at: integer() | nil,
-          expected_at: integer() | nil
+          expected: ExpectedReading.t() | nil
         }
 end

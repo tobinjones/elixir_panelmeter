@@ -5,7 +5,7 @@ defmodule ADMX3652 do
   This module provides the public API for starting and controlling a meter.
   """
 
-  alias ADMX3652.{Command, Line, Reading, StateMachine}
+  alias ADMX3652.{Command, ExpectedReading, Line, Reading, StateMachine}
 
   @type event_target :: pid() | atom() | {atom(), node()}
   @type event :: {:line, Line.t()} | {:reading, Reading.t()}
@@ -54,11 +54,12 @@ defmodule ADMX3652 do
   @doc """
   Requests one asynchronous measurement from a channel.
 
-  The call returns when the command exchange has been verified. The reading
-  itself is emitted later to the configured event target.
+  The call returns the expected reading once the command exchange has been
+  verified. The reading itself is emitted later to the configured event target
+  and carries the same `ADMX3652.ExpectedReading` struct.
   """
   @spec measure(:gen_statem.server_ref(), ADMX3652.Protocol.channel()) ::
-          :ok | {:error, term()}
+          {:ok, ExpectedReading.t()} | {:error, term()}
   def measure(meter, channel) when channel in [1, 2] do
     :gen_statem.call(meter, {:measure, channel}, :infinity)
   end

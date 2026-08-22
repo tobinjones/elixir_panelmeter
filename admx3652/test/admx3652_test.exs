@@ -127,9 +127,7 @@ defmodule ADMX3652Test do
     assert_reading(%Reading{
       channel: 2,
       value: 1.25,
-      exchange_id: nil,
-      requested_at: nil,
-      expected_at: nil
+      expected: nil
     })
 
     assert_line(%Line{decoded: {:measurement, 2, 1.25}})
@@ -156,15 +154,16 @@ defmodule ADMX3652Test do
             %Data{
               transport: transport,
               expected: %{
-                1 => %ExpectedReading{
-                  exchange_id: ^exchange_id,
-                  sent_at: ^sent_at,
-                  expected_at: expected_at
-                }
+                1 =>
+                  %ExpectedReading{
+                    exchange_id: ^exchange_id,
+                    sent_at: ^sent_at,
+                    expected_after: expected_after
+                  } = expected
               }
             }} = :sys.get_state(meter)
 
-    assert expected_at - sent_at ==
+    assert expected_after - sent_at ==
              System.convert_time_unit(403_000, :microsecond, :native)
 
     TestTransport.send_line(transport, "Channel1: 1.25")
@@ -172,9 +171,7 @@ defmodule ADMX3652Test do
     assert_reading(%Reading{
       channel: 1,
       value: 1.25,
-      exchange_id: ^exchange_id,
-      requested_at: ^sent_at,
-      expected_at: ^expected_at,
+      expected: ^expected,
       timestamp: received_at
     })
 
@@ -188,7 +185,7 @@ defmodule ADMX3652Test do
 
     TestTransport.send_line(transport, ~s(0,"No error"))
     assert_line(%Line{decoded: {:error_queue, 0, "No error"}, exchange_id: ^exchange_id})
-    assert Task.await(task) == :ok
+    assert {:ok, ^expected} = Task.await(task)
   end
 
   test "a raw command from ready is emitted without an exchange id and desynchronises" do
