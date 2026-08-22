@@ -695,7 +695,29 @@ defmodule ADMX3652Test do
     refute_receive {:transport_write, _line}
   end
 
-  test "guards commands that would disrupt a requested reading" do
+  test "a repeated measurement replaces the channel expectation" do
+    {:ok, meter} = start_ready_meter()
+
+    first_task = Task.async(fn -> ADMX3652.measure(meter, 1) end)
+    assert_receive {:transport_write, "MEASure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, ~s(0,"No error"))
+    assert {:ok, first_expected} = Task.await(first_task)
+
+    second_task = Task.async(fn -> ADMX3652.measure(meter, 1) end)
+    assert_receive {:transport_write, "MEASure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+    TestTransport.send_line(transport, ~s(0,"No error"))
+    assert {:ok, second_expected} = Task.await(second_task)
+    refute second_expected == first_expected
+
+    TestTransport.send_line(transport, "Channel1: 1.25")
+    assert_reading(%Reading{channel: 1, value: 1.25, expected: ^second_expected})
+  end
+
+  test "reconfiguration retains a requested reading expectation unchanged" do
     {:ok, meter} = start_ready_meter()
 
     task = Task.async(fn -> ADMX3652.measure(meter, 1) end)
@@ -704,14 +726,25 @@ defmodule ADMX3652Test do
 
     {:ready, %Data{transport: transport}} = :sys.get_state(meter)
     TestTransport.send_line(transport, ~s(0,"No error"))
-    assert {:ok, %ExpectedReading{}} = Task.await(task)
+    assert {:ok, expected} = Task.await(task)
 
-    assert ADMX3652.measure(meter, 1) == {:error, :reading_pending}
-    assert ADMX3652.set_range(meter, 1, 2.0) == {:error, :reading_pending}
-    assert ADMX3652.set_nplc(meter, 1, 1) == {:error, :reading_pending}
-    assert ADMX3652.set_line_frequency(meter, 60) == {:error, :reading_pending}
-    assert ADMX3652.set_trigger_source(meter, :external) == {:error, :reading_pending}
-    refute_receive {:transport_write, _line}
+    assert_verified_set(
+      meter,
+      fn -> ADMX3652.set_range(meter, 1, 2.0) end,
+      "CONFigure:VOLTage:DC 1,2.0"
+    )
+
+    assert_verified_set(
+      meter,
+      fn -> ADMX3652.set_nplc(meter, 1, 1) end,
+      "CONFigure:VOLTage:DC:NPLCycles 1,1.0"
+    )
+
+    assert_verified_set(
+      meter,
+      fn -> ADMX3652.set_line_frequency(meter, 60) end,
+      "SYSTem:PLC:SET 60"
+    )
 
     assert_verified_set(
       meter,
@@ -719,8 +752,53 @@ defmodule ADMX3652Test do
       "CONFigure:CONTINUOUS:READ 1,ON"
     )
 
+    assert {:ready, %Data{expected: %{1 => ^expected}}} = :sys.get_state(meter)
+
     TestTransport.send_line(transport, "Channel1: 1.25")
-    assert_reading(%Reading{channel: 1, value: 1.25, expected: %ExpectedReading{}})
+    assert_reading(%Reading{channel: 1, value: 1.25, expected: ^expected})
+  end
+
+  test "a verified trigger-source change discards requested reading expectations" do
+    {:ok, meter} = start_ready_meter()
+
+    measure_task = Task.async(fn -> ADMX3652.measure(meter, 1) end)
+    assert_receive {:transport_write, "MEASure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, ~s(0,"No error"))
+    assert {:ok, expected} = Task.await(measure_task)
+
+    trigger_task = Task.async(fn -> ADMX3652.set_trigger_source(meter, :external) end)
+    assert_receive {:transport_write, "TRIGger:SOURce EXTernal"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+    assert {:ready, %Data{expected: %{1 => ^expected}}} = :sys.get_state(meter)
+
+    TestTransport.send_line(transport, ~s(0,"No error"))
+    assert Task.await(trigger_task) == :ok
+    assert {:ready, %Data{expected: %{}}} = :sys.get_state(meter)
+  end
+
+  test "a rejected trigger-source change retains requested reading expectations" do
+    {:ok, meter} = start_ready_meter()
+
+    measure_task = Task.async(fn -> ADMX3652.measure(meter, 1) end)
+    assert_receive {:transport_write, "MEASure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, ~s(0,"No error"))
+    assert {:ok, expected} = Task.await(measure_task)
+
+    trigger_task = Task.async(fn -> ADMX3652.set_trigger_source(meter, :external) end)
+    assert_receive {:transport_write, "TRIGger:SOURce EXTernal"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+    TestTransport.send_line(transport, ~s(-200,"Execution error"))
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+    TestTransport.send_line(transport, ~s(0,"No error"))
+
+    assert Task.await(trigger_task) == {:error, {:device, [{-200, "Execution error"}]}}
+    assert {:ready, %Data{expected: %{1 => ^expected}}} = :sys.get_state(meter)
   end
 
   test "measure commits single read mode after verification" do

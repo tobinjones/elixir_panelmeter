@@ -129,8 +129,9 @@ defmodule ADMX3652 do
   The call returns the expected reading once the command exchange has been
   verified. The reading itself is emitted later to the configured event target
   and carries the same `ADMX3652.ExpectedReading` struct. Measurements are
-  supported only with internal triggering, and a channel may have only one
-  requested reading outstanding.
+  supported only with internal triggering. Only the latest request for a
+  channel remains outstanding: a later request replaces its expectation as it
+  restarts the instrument's conversion.
   """
   @spec measure(:gen_statem.server_ref(), ADMX3652.Protocol.channel()) ::
           {:ok, ExpectedReading.t()} | {:error, term()}

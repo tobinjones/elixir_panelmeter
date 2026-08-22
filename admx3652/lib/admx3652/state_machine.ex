@@ -218,16 +218,16 @@ defmodule ADMX3652.StateMachine do
         start_exchange(data, from, Command.get_range(channel))
 
       {:set_range, channel, range} ->
-        start_channel_reconfiguration(data, from, channel, Command.set_range(channel, range))
+        start_exchange(data, from, Command.set_range(channel, range))
 
       {:get_nplc, channel} when channel in [1, 2] ->
         start_exchange(data, from, Command.get_nplc(channel))
 
       {:set_nplc, channel, nplc} ->
-        start_channel_reconfiguration(data, from, channel, Command.set_nplc(channel, nplc))
+        start_exchange(data, from, Command.set_nplc(channel, nplc))
 
       {:set_line_frequency, line_frequency} ->
-        start_global_reconfiguration(data, from, Command.set_line_frequency(line_frequency))
+        start_exchange(data, from, Command.set_line_frequency(line_frequency))
 
       {:set_read_mode, channel, read_mode} ->
         start_exchange(data, from, Command.set_read_mode(channel, read_mode))
@@ -236,7 +236,7 @@ defmodule ADMX3652.StateMachine do
         start_exchange(data, from, Command.get_trigger_source())
 
       {:set_trigger_source, trigger_source} ->
-        start_global_reconfiguration(data, from, Command.set_trigger_source(trigger_source))
+        start_exchange(data, from, Command.set_trigger_source(trigger_source))
 
       {:measure, channel} when channel in [1, 2] ->
         start_measurement(data, from, channel)
@@ -358,32 +358,12 @@ defmodule ADMX3652.StateMachine do
     end
   end
 
-  defp start_channel_reconfiguration(data, from, channel, command) do
-    if Map.has_key?(data.expected, channel) do
-      reply(data, from, {:error, :reading_pending})
-    else
-      start_exchange(data, from, command)
-    end
-  end
-
-  defp start_global_reconfiguration(data, from, command) do
-    if map_size(data.expected) == 0 do
-      start_exchange(data, from, command)
-    else
-      reply(data, from, {:error, :reading_pending})
-    end
-  end
-
   defp start_measurement(%Data{shadow: %Shadow{trigger_source: :external}} = data, from, _channel) do
     reply(data, from, {:error, :unsupported_trigger_mode})
   end
 
   defp start_measurement(data, from, channel) do
-    if Map.has_key?(data.expected, channel) do
-      reply(data, from, {:error, :reading_pending})
-    else
-      start_exchange(data, from, Command.measure(channel))
-    end
+    start_exchange(data, from, Command.measure(channel))
   end
 
   defp continue_exchange(data, :configuring, exchange, writes) do
@@ -407,6 +387,7 @@ defmodule ADMX3652.StateMachine do
   end
 
   defp finish_exchange(data, from, exchange, expected, result, shadow_delta) do
+    data = discard_expected_after_trigger_change(data, exchange.command, result)
     shadow = Shadow.apply(data.shadow, shadow_delta)
     data = %{data | current: nil, shadow: shadow}
 
@@ -592,6 +573,16 @@ defmodule ADMX3652.StateMachine do
 
     %{data | expected: expected}
   end
+
+  defp discard_expected_after_trigger_change(
+         %Data{shadow: %Shadow{trigger_source: previous}} = data,
+         {:set_trigger_source, source},
+         :ok
+       )
+       when source != previous,
+       do: %{data | expected: %{}}
+
+  defp discard_expected_after_trigger_change(data, _command, _result), do: data
 
   defp emit(%Data{event_target: event_target}, event) do
     send(event_target, {:admx3652, self(), event})
