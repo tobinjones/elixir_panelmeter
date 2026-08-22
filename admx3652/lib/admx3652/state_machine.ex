@@ -3,7 +3,7 @@ defmodule ADMX3652.StateMachine do
 
   @behaviour :gen_statem
 
-  alias ADMX3652.{Command, Exchange, Line, Protocol, Shadow}
+  alias ADMX3652.{Command, Configuration, Exchange, Line, Protocol, Shadow}
 
   @exchange_timeout 1_000
   @startup_timeout 10_000
@@ -15,22 +15,42 @@ defmodule ADMX3652.StateMachine do
     @moduledoc false
 
     @enforce_keys [:transport_mod, :transport, :pubsub]
-    defstruct [:transport_mod, :transport, :pubsub, current: nil, shadow: %Shadow{}]
+    defstruct [
+      :transport_mod,
+      :transport,
+      :pubsub,
+      :configuration,
+      current: nil,
+      pending: [],
+      shadow: %Shadow{}
+    ]
 
     @type t :: %__MODULE__{
             transport_mod: module(),
             transport: ADMX3652.Transport.t(),
             pubsub: Phoenix.PubSub.t(),
-            current: nil | {:gen_statem.from(), Exchange.t()},
+            configuration: Configuration.t(),
+            current: nil | {:gen_statem.from() | :configuring, Exchange.t()},
+            pending: [Command.t()],
             shadow: Shadow.t() | :unknown
           }
   end
 
   @spec start_link(keyword()) :: :gen_statem.start_ret()
   def start_link(opts) do
-    case Keyword.get(opts, :name) do
-      nil -> :gen_statem.start_link(__MODULE__, opts, [])
-      name -> :gen_statem.start_link(server_name(name), __MODULE__, opts, [])
+    configuration = Keyword.get(opts, :configuration, Configuration.default())
+
+    case Configuration.validate(configuration) do
+      :ok ->
+        opts = Keyword.put(opts, :configuration, configuration)
+
+        case Keyword.get(opts, :name) do
+          nil -> :gen_statem.start_link(__MODULE__, opts, [])
+          name -> :gen_statem.start_link(server_name(name), __MODULE__, opts, [])
+        end
+
+      {:error, reason} ->
+        {:error, {:invalid_configuration, reason}}
     end
   end
 
@@ -42,6 +62,7 @@ defmodule ADMX3652.StateMachine do
     transport_mod = Keyword.fetch!(opts, :transport)
     transport_opts = Keyword.get(opts, :transport_opts, [])
     pubsub = Keyword.fetch!(opts, :pubsub)
+    configuration = Keyword.fetch!(opts, :configuration)
 
     {:ok, transport} = transport_mod.start_link(self(), transport_opts)
 
@@ -57,6 +78,7 @@ defmodule ADMX3652.StateMachine do
        transport_mod: transport_mod,
        transport: transport,
        pubsub: pubsub,
+       configuration: configuration,
        shadow: shadow
      }}
   end
@@ -80,7 +102,15 @@ defmodule ADMX3652.StateMachine do
 
   def starting(:internal, %Line{decoded: {:device_message, :ready}} = line, data) do
     publish(data, line)
-    {:next_state, :configuring, data}
+
+    data = %{
+      data
+      | current: nil,
+        pending: Configuration.commands(data.configuration),
+        shadow: %Shadow{}
+    }
+
+    {:next_state, :configuring, data, [{:next_event, :internal, :configure_next}]}
   end
 
   def starting(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
@@ -99,11 +129,60 @@ defmodule ADMX3652.StateMachine do
 
   def configuring(:info, message, data), do: handle_info(message, data)
 
+  def configuring(:internal, :configure_next, %Data{current: nil, pending: []} = data) do
+    if Shadow.complete?(data.shadow) and compatible_read_modes?(data.shadow) do
+      {:next_state, :ready, data}
+    else
+      desynchronise(data)
+    end
+  end
+
+  def configuring(
+        :internal,
+        :configure_next,
+        %Data{current: nil, pending: [command | pending]} = data
+      ) do
+    start_exchange(%{data | pending: pending}, :configuring, command)
+  end
+
   def configuring(:internal, %Line{decoded: {:device_message, :ready}} = line, data) do
     unexpected_restart(line, data)
   end
 
-  def configuring(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
+  def configuring(:internal, %Line{} = line, %Data{current: nil} = data),
+    do: route_unsolicited(line, data)
+
+  def configuring(
+        :internal,
+        %Line{} = line,
+        %Data{current: {:configuring, exchange}} = data
+      ) do
+    case Exchange.offer(exchange, line.decoded) do
+      {:continue, exchange, writes} ->
+        publish(data, %{line | exchange_id: exchange.id})
+        continue_exchange(data, :configuring, exchange, writes)
+
+      {:complete, result, shadow_delta} ->
+        publish(data, %{line | exchange_id: exchange.id})
+        finish_configuration_exchange(data, result, shadow_delta)
+
+      :not_claimed ->
+        route_unsolicited(line, data)
+
+      {:invalid, reason} ->
+        publish(data, line)
+        fail_exchange(data, :configuring, {:protocol, reason})
+    end
+  end
+
+  def configuring(
+        {:timeout, :exchange},
+        :expired,
+        %Data{current: {:configuring, _exchange}} = data
+      ) do
+    fail_exchange(data, :configuring, :timeout)
+  end
+
   def configuring(_event_type, _event_content, data), do: {:keep_state, data}
 
   def ready({:call, from}, :enable, data), do: reply(data, from, :ok)
@@ -217,6 +296,28 @@ defmodule ADMX3652.StateMachine do
     {:ok, Command.set_range(channel, range)}
   end
 
+  defp command({:get_nplc, channel}) when channel in [1, 2] do
+    {:ok, Command.get_nplc(channel)}
+  end
+
+  defp command({:set_nplc, channel, nplc}) do
+    {:ok, Command.set_nplc(channel, nplc)}
+  end
+
+  defp command({:set_line_frequency, frequency}) do
+    {:ok, Command.set_line_frequency(frequency)}
+  end
+
+  defp command({:set_read_mode, channel, mode}) do
+    {:ok, Command.set_read_mode(channel, mode)}
+  end
+
+  defp command(:get_trigger_source), do: {:ok, Command.get_trigger_source()}
+
+  defp command({:set_trigger_source, source}) do
+    {:ok, Command.set_trigger_source(source)}
+  end
+
   defp command(_request), do: :error
 
   defp start_exchange(data, from, command) do
@@ -251,6 +352,24 @@ defmodule ADMX3652.StateMachine do
     {:keep_state, data, [{{:timeout, :exchange}, :cancel}, {:reply, from, result}]}
   end
 
+  defp finish_configuration_exchange(data, {:error, reason}, _shadow_delta) do
+    fail_exchange(data, :configuring, {:device, reason})
+  end
+
+  defp finish_configuration_exchange(data, _result, shadow_delta) do
+    shadow = Shadow.apply(data.shadow, shadow_delta)
+    data = %{data | current: nil, shadow: shadow}
+
+    {:keep_state, data,
+     [{{:timeout, :exchange}, :cancel}, {:next_event, :internal, :configure_next}]}
+  end
+
+  defp fail_exchange(data, :configuring, _reason) do
+    data = %{data | current: nil, pending: [], shadow: :unknown}
+
+    {:next_state, :desynchronised, data, [{{:timeout, :exchange}, :cancel}]}
+  end
+
   defp fail_exchange(data, from, reason) do
     data = %{data | current: nil, shadow: :unknown}
 
@@ -278,11 +397,11 @@ defmodule ADMX3652.StateMachine do
 
     case data.transport_mod.set_enabled(data.transport, false) do
       :ok ->
-        data = %{data | current: nil, shadow: %Shadow{}}
+        data = %{data | current: nil, pending: [], shadow: %Shadow{}}
         {:next_state, :off, data, exchange_actions ++ [{:reply, from, :ok}]}
 
       {:error, reason} ->
-        data = %{data | current: nil, shadow: :unknown}
+        data = %{data | current: nil, pending: [], shadow: :unknown}
 
         {:next_state, :desynchronised, data,
          exchange_actions ++ [{:reply, from, {:error, {:transport, reason}}}]}
@@ -290,6 +409,10 @@ defmodule ADMX3652.StateMachine do
   end
 
   defp interrupt_exchange(nil, _reason), do: []
+
+  defp interrupt_exchange({:configuring, _exchange}, _reason) do
+    [{{:timeout, :exchange}, :cancel}]
+  end
 
   defp interrupt_exchange({exchange_from, _exchange}, reason) do
     [
@@ -301,17 +424,17 @@ defmodule ADMX3652.StateMachine do
   defp unexpected_restart(line, data) do
     publish(data, line)
     exchange_actions = interrupt_exchange(data.current, :device_restarted)
-    data = %{data | current: nil, shadow: :unknown}
+    data = %{data | current: nil, pending: [], shadow: :unknown}
 
     {:next_state, :desynchronised, data, exchange_actions}
   end
 
   defp desynchronise(data) do
-    {:next_state, :desynchronised, %{data | current: nil, shadow: :unknown}}
+    {:next_state, :desynchronised, %{data | current: nil, pending: [], shadow: :unknown}}
   end
 
   defp send_raw_command(data, from, raw_line) do
-    data = %{data | shadow: :unknown}
+    data = %{data | current: nil, pending: [], shadow: :unknown}
 
     response =
       case write_all(data, nil, [raw_line]) do
@@ -357,6 +480,14 @@ defmodule ADMX3652.StateMachine do
   defp reply(data, from, response) do
     {:keep_state, data, [{:reply, from, response}]}
   end
+
+  defp compatible_read_modes?(%Shadow{
+         trigger_source: :external,
+         read_mode: %{1 => mode_1, 2 => mode_2}
+       }),
+       do: mode_1 == mode_2
+
+  defp compatible_read_modes?(_shadow), do: true
 
   defp server_name(name) when is_atom(name), do: {:local, name}
   defp server_name({:global, _term} = name), do: name

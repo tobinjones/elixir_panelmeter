@@ -11,8 +11,9 @@ defmodule ADMX3652 do
   Enables the instrument.
 
   From `:off`, a successful request enters `:starting`. The driver enters
-  `:configuring` when the instrument reports that it is ready, or
-  `:desynchronised` if that report does not arrive within ten seconds.
+  `:configuring` when the instrument reports that it is ready, applies the
+  startup configuration, and enters `:ready` with a complete shadow. Startup
+  or configuration failures enter `:desynchronised`.
   """
   @spec enable(:gen_statem.server_ref()) :: :ok | {:error, term()}
   def enable(meter) do
@@ -49,6 +50,55 @@ defmodule ADMX3652 do
     :gen_statem.call(meter, command, :infinity)
   end
 
+  @doc "Reads the configured NPLC for a channel."
+  @spec get_nplc(:gen_statem.server_ref(), ADMX3652.Protocol.channel()) ::
+          {:ok, float()} | {:error, term()}
+  def get_nplc(meter, channel) when channel in [1, 2] do
+    :gen_statem.call(meter, {:get_nplc, channel}, :infinity)
+  end
+
+  @doc "Sets the configured NPLC for a channel."
+  @spec set_nplc(:gen_statem.server_ref(), ADMX3652.Protocol.channel(), number()) ::
+          :ok | {:error, term()}
+  def set_nplc(meter, channel, nplc) do
+    command = Command.set_nplc(channel, nplc)
+    :gen_statem.call(meter, command, :infinity)
+  end
+
+  @doc "Sets the power-line frequency used for NPLC values of one or greater."
+  @spec set_line_frequency(:gen_statem.server_ref(), Command.line_frequency()) ::
+          :ok | {:error, term()}
+  def set_line_frequency(meter, frequency) do
+    command = Command.set_line_frequency(frequency)
+    :gen_statem.call(meter, command, :infinity)
+  end
+
+  @doc "Sets a channel to single or continuous read mode."
+  @spec set_read_mode(
+          :gen_statem.server_ref(),
+          ADMX3652.Protocol.channel(),
+          Command.read_mode()
+        ) :: :ok | {:error, term()}
+  def set_read_mode(meter, channel, mode) do
+    command = Command.set_read_mode(channel, mode)
+    :gen_statem.call(meter, command, :infinity)
+  end
+
+  @doc "Reads the shared trigger source."
+  @spec get_trigger_source(:gen_statem.server_ref()) ::
+          {:ok, Command.trigger_source()} | {:error, term()}
+  def get_trigger_source(meter) do
+    :gen_statem.call(meter, :get_trigger_source, :infinity)
+  end
+
+  @doc "Sets the shared trigger source."
+  @spec set_trigger_source(:gen_statem.server_ref(), Command.trigger_source()) ::
+          :ok | {:error, term()}
+  def set_trigger_source(meter, source) do
+    command = Command.set_trigger_source(source)
+    :gen_statem.call(meter, command, :infinity)
+  end
+
   @doc """
   Sends an arbitrary line to the instrument without verification.
 
@@ -70,6 +120,8 @@ defmodule ADMX3652 do
     * `:transport_opts` - options passed to the transport (defaults to `[]`)
     * `:pubsub` - registered name of a supervised `Phoenix.PubSub` server
       (required); lines are broadcast on `"admx3652:lines"`
+    * `:configuration` - an `ADMX3652.Configuration` applied after startup
+      (defaults to `ADMX3652.Configuration.default/0`)
     * `:name` - optional `:gen_statem` registration name
   """
   @spec start_link(keyword()) :: :gen_statem.start_ret()

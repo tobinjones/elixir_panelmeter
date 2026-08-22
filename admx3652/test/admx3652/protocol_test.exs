@@ -19,6 +19,8 @@ defmodule ADMX3652.ProtocolTest do
       assert Protocol.decode("Current BAUDRATE  : 115200") == {:baud_rate, 115_200}
       assert Protocol.decode("Current NPLC-CHAN1: 1") == {:nplc, 1, 1.0}
       assert Protocol.decode("Current NPLC-CHAN2: 2") == {:nplc, 2, 2.0}
+      assert Protocol.decode("Trigger Mode : INTernal") == {:trigger_source, :internal}
+      assert Protocol.decode("Trigger Mode : EXTernal") == {:trigger_source, :external}
     end
 
     test "decodes identity and mode responses" do

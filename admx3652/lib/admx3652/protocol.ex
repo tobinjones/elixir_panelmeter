@@ -8,6 +8,7 @@ defmodule ADMX3652.Protocol do
           | {:overload, channel()}
           | {:range, channel(), float()}
           | {:nplc, channel(), float()}
+          | {:trigger_source, :internal | :external}
           | {:baud_rate, pos_integer()}
           | {:identity, binary()}
           | {:mode, :user | :debug | :production}
@@ -58,6 +59,12 @@ defmodule ADMX3652.Protocol do
 
       "Current NPLC-CHAN2: " <> value ->
         decode_float(value, &{:nplc, 2, &1})
+
+      "Trigger Mode : INTernal" ->
+        {:trigger_source, :internal}
+
+      "Trigger Mode : EXTernal" ->
+        {:trigger_source, :external}
 
       # Simple query responses
 
