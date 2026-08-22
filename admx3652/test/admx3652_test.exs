@@ -1,7 +1,7 @@
 defmodule ADMX3652Test do
   use ExUnit.Case, async: true
 
-  alias ADMX3652.{Line, Shadow, TestTransport}
+  alias ADMX3652.{Line, Shadow, StateMachine, TestTransport}
   alias ADMX3652.StateMachine.Data
 
   @line_topic "admx3652:lines"
@@ -61,7 +61,7 @@ defmodule ADMX3652Test do
     assert ADMX3652.raw_command(meter, "*IDN?") == {:error, :off}
   end
 
-  test "enable, raw commands, and disable follow the temporary lifecycle" do
+  test "ready banner advances startup to configuring" do
     pubsub = start_line_pubsub()
     {:ok, meter} = start_meter(pubsub: pubsub)
 
@@ -71,6 +71,16 @@ defmodule ADMX3652Test do
     assert {:starting, %Data{transport: transport, shadow: :unknown}} =
              :sys.get_state(meter)
 
+    TestTransport.send_line(transport, "ADC self check done")
+
+    assert_receive %Line{
+      direction: :received,
+      decoded: {:device_message, :adc_self_check_done},
+      exchange_id: nil
+    }
+
+    assert {:starting, %Data{}} = :sys.get_state(meter)
+
     TestTransport.send_line(transport, "DAQ is ready to use")
 
     assert_receive %Line{
@@ -79,7 +89,7 @@ defmodule ADMX3652Test do
       exchange_id: nil
     }
 
-    assert {:starting, %Data{}} = :sys.get_state(meter)
+    assert {:configuring, %Data{current: nil, shadow: :unknown}} = :sys.get_state(meter)
 
     assert ADMX3652.raw_command(meter, "SYSTem:VERSion?") == :ok
     assert_receive {:transport_write, "SYSTem:VERSion?"}
@@ -92,6 +102,83 @@ defmodule ADMX3652Test do
     assert ADMX3652.disable(meter) == :ok
     assert_receive {:transport_enabled, false}
     assert {:off, %Data{current: nil, shadow: %Shadow{}}} = :sys.get_state(meter)
+  end
+
+  test "startup timeout desynchronises the meter" do
+    {:ok, meter} = start_meter()
+
+    assert ADMX3652.enable(meter) == :ok
+    assert_receive {:transport_enabled, true}
+    assert {:starting, data} = :sys.get_state(meter)
+
+    assert {:next_state, :desynchronised, %Data{current: nil, shadow: :unknown}} =
+             StateMachine.starting(:state_timeout, :expired, data)
+  end
+
+  test "a ready banner while off remains unsolicited" do
+    pubsub = start_line_pubsub()
+    {:ok, meter} = start_meter(pubsub: pubsub)
+    {:off, %Data{transport: transport}} = :sys.get_state(meter)
+
+    TestTransport.send_line(transport, "DAQ is ready to use")
+
+    assert_receive %Line{
+      decoded: {:device_message, :ready},
+      exchange_id: nil
+    }
+
+    assert {:off, %Data{}} = :sys.get_state(meter)
+  end
+
+  test "a second ready banner while configuring desynchronises the meter" do
+    pubsub = start_line_pubsub()
+    {:ok, meter} = start_meter(pubsub: pubsub)
+    assert ADMX3652.enable(meter) == :ok
+    assert_receive {:transport_enabled, true}
+    {:starting, %Data{transport: transport}} = :sys.get_state(meter)
+
+    TestTransport.send_line(transport, "DAQ is ready to use")
+    assert_receive %Line{decoded: {:device_message, :ready}}
+    assert {:configuring, %Data{}} = :sys.get_state(meter)
+
+    TestTransport.send_line(transport, "DAQ is ready to use")
+    assert_receive %Line{decoded: {:device_message, :ready}}
+    assert {:desynchronised, %Data{current: nil, shadow: :unknown}} = :sys.get_state(meter)
+  end
+
+  test "a ready banner while ready indicates an unexpected restart" do
+    pubsub = start_line_pubsub()
+    {:ok, meter} = start_ready_meter(pubsub: pubsub)
+    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+
+    TestTransport.send_line(transport, "DAQ is ready to use")
+
+    assert_receive %Line{
+      decoded: {:device_message, :ready},
+      exchange_id: nil
+    }
+
+    assert {:desynchronised, %Data{current: nil, shadow: :unknown}} = :sys.get_state(meter)
+  end
+
+  test "an unexpected restart interrupts an active exchange" do
+    pubsub = start_line_pubsub()
+    {:ok, meter} = start_ready_meter(pubsub: pubsub)
+
+    task = Task.async(fn -> ADMX3652.get_range(meter, 1) end)
+    assert_receive {:transport_write, "CONFigure:VOLTage:DC? 1"}
+    assert_receive {:transport_write, "SYSTem:ERRor?"}
+
+    {:ready, %Data{transport: transport}} = :sys.get_state(meter)
+    TestTransport.send_line(transport, "DAQ is ready to use")
+
+    assert_receive %Line{
+      decoded: {:device_message, :ready},
+      exchange_id: nil
+    }
+
+    assert Task.await(task) == {:error, :device_restarted}
+    assert {:desynchronised, %Data{current: nil, shadow: :unknown}} = :sys.get_state(meter)
   end
 
   test "publishes received lines even when no exchange is active" do

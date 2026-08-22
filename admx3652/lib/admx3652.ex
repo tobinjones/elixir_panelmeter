@@ -10,8 +10,9 @@ defmodule ADMX3652 do
   @doc """
   Enables the instrument.
 
-  From `:off`, a successful request enters `:starting`. Startup progression
-  beyond that state is not implemented yet.
+  From `:off`, a successful request enters `:starting`. The driver enters
+  `:configuring` when the instrument reports that it is ready, or
+  `:desynchronised` if that report does not arrive within ten seconds.
   """
   @spec enable(:gen_statem.server_ref()) :: :ok | {:error, term()}
   def enable(meter) do

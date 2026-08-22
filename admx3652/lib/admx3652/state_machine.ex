@@ -6,6 +6,7 @@ defmodule ADMX3652.StateMachine do
   alias ADMX3652.{Command, Exchange, Line, Protocol, Shadow}
 
   @exchange_timeout 1_000
+  @startup_timeout 10_000
   @line_topic "admx3652:lines"
 
   @type state :: :off | :starting | :configuring | :ready | :desynchronised
@@ -76,7 +77,14 @@ defmodule ADMX3652.StateMachine do
 
   def starting({:call, from}, _request, data), do: reply(data, from, {:error, :starting})
   def starting(:info, message, data), do: handle_info(message, data)
+
+  def starting(:internal, %Line{decoded: {:device_message, :ready}} = line, data) do
+    publish(data, line)
+    {:next_state, :configuring, data}
+  end
+
   def starting(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
+  def starting(:state_timeout, :expired, data), do: desynchronise(data)
   def starting(_event_type, _event_content, data), do: {:keep_state, data}
 
   def configuring({:call, from}, :enable, data), do: reply(data, from, :ok)
@@ -90,6 +98,11 @@ defmodule ADMX3652.StateMachine do
     do: reply(data, from, {:error, :configuring})
 
   def configuring(:info, message, data), do: handle_info(message, data)
+
+  def configuring(:internal, %Line{decoded: {:device_message, :ready}} = line, data) do
+    unexpected_restart(line, data)
+  end
+
   def configuring(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def configuring(_event_type, _event_content, data), do: {:keep_state, data}
 
@@ -116,6 +129,10 @@ defmodule ADMX3652.StateMachine do
 
   def ready({:call, from}, _request, data), do: reply(data, from, {:error, :busy})
   def ready(:info, message, data), do: handle_info(message, data)
+
+  def ready(:internal, %Line{decoded: {:device_message, :ready}} = line, data) do
+    unexpected_restart(line, data)
+  end
 
   def ready(:internal, %Line{} = line, %Data{current: nil} = data) do
     route_unsolicited(line, data)
@@ -168,6 +185,11 @@ defmodule ADMX3652.StateMachine do
     do: reply(data, from, {:error, :desynchronised})
 
   def desynchronised(:info, message, data), do: handle_info(message, data)
+
+  def desynchronised(:internal, %Line{decoded: {:device_message, :ready}} = line, data) do
+    unexpected_restart(line, data)
+  end
+
   def desynchronised(:internal, %Line{} = line, data), do: route_unsolicited(line, data)
   def desynchronised(_event_type, _event_content, data), do: {:keep_state, data}
 
@@ -240,7 +262,9 @@ defmodule ADMX3652.StateMachine do
     case data.transport_mod.set_enabled(data.transport, true) do
       :ok ->
         data = %{data | shadow: :unknown}
-        {:next_state, :starting, data, [{:reply, from, :ok}]}
+
+        {:next_state, :starting, data,
+         [{:state_timeout, @startup_timeout, :expired}, {:reply, from, :ok}]}
 
       {:error, reason} ->
         data = %{data | shadow: :unknown}
@@ -250,7 +274,7 @@ defmodule ADMX3652.StateMachine do
   end
 
   defp disable_instrument(data, from) do
-    exchange_actions = interrupt_exchange(data.current)
+    exchange_actions = interrupt_exchange(data.current, :disabled)
 
     case data.transport_mod.set_enabled(data.transport, false) do
       :ok ->
@@ -265,13 +289,25 @@ defmodule ADMX3652.StateMachine do
     end
   end
 
-  defp interrupt_exchange(nil), do: []
+  defp interrupt_exchange(nil, _reason), do: []
 
-  defp interrupt_exchange({exchange_from, _exchange}) do
+  defp interrupt_exchange({exchange_from, _exchange}, reason) do
     [
       {{:timeout, :exchange}, :cancel},
-      {:reply, exchange_from, {:error, :disabled}}
+      {:reply, exchange_from, {:error, reason}}
     ]
+  end
+
+  defp unexpected_restart(line, data) do
+    publish(data, line)
+    exchange_actions = interrupt_exchange(data.current, :device_restarted)
+    data = %{data | current: nil, shadow: :unknown}
+
+    {:next_state, :desynchronised, data, exchange_actions}
+  end
+
+  defp desynchronise(data) do
+    {:next_state, :desynchronised, %{data | current: nil, shadow: :unknown}}
   end
 
   defp send_raw_command(data, from, raw_line) do
